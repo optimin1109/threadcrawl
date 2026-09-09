@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "item",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "actor",
+    "kind",
+    "timestamp",
+    "bundleEvidence",
+    "repostTimestampVerified",
+    "parts"
+  ],
+  "properties": {
+    "id": {
+      "type": "string"
+    },
+    "actor": {
+      "type": "string"
+    },
+    "kind": {
+      "enum": [
+        "original",
+        "quote",
+        "repost",
+        "bundle",
+        "reply",
+        "unknown"
+      ]
+    },
+    "timestamp": {
+      "type": "string"
+    },
+    "bundleEvidence": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "repostTimestampVerified": {
+      "type": "boolean"
+    },
+    "parts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "timestamp",
+          "text",
+          "label",
+          "orderEvidence",
+          "failure"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "text": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "orderEvidence": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "failure": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      }
+    }
+  }
+}

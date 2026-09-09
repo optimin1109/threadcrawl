@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "collection-report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "account",
+    "sourceId",
+    "scope",
+    "startedAt",
+    "endedAt",
+    "discoveredCount",
+    "savedCount",
+    "excludedNoTextCount",
+    "excludedReplyCount",
+    "duplicateCount",
+    "failedItems",
+    "finalStatus",
+    "endReached",
+    "coverageKnown",
+    "outputGeneration",
+    "completionScope"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "enum": [
+        1
+      ]
+    },
+    "account": {
+      "type": "string"
+    },
+    "sourceId": {
+      "type": "string"
+    },
+    "scope": {
+      "enum": [
+        "fixture",
+        "live"
+      ]
+    },
+    "startedAt": {
+      "type": "string"
+    },
+    "endedAt": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "discoveredCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "savedCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "excludedNoTextCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "excludedReplyCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "duplicateCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "failedItems": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "finalStatus": {
+      "enum": [
+        "진행 중",
+        "완료",
+        "불완전",
+        "중단"
+      ]
+    },
+    "endReached": {
+      "type": "boolean"
+    },
+    "coverageKnown": {
+      "type": "boolean"
+    },
+    "outputGeneration": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "completionScope": {
+      "type": "string"
+    }
+  }
+}

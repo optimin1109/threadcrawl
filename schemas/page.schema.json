@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "page",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "items",
+    "next",
+    "end",
+    "coverageKnown",
+    "issues"
+  ],
+  "properties": {
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "actor",
+          "kind",
+          "timestamp",
+          "bundleEvidence",
+          "repostTimestampVerified",
+          "parts"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "original",
+              "quote",
+              "repost",
+              "bundle",
+              "reply",
+              "unknown"
+            ]
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "bundleEvidence": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repostTimestampVerified": {
+            "type": "boolean"
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "timestamp",
+                "text",
+                "label",
+                "orderEvidence",
+                "failure"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "timestamp": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "label": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "orderEvidence": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "failure": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "next": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "end": {
+      "type": "boolean"
+    },
+    "coverageKnown": {
+      "type": "boolean"
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

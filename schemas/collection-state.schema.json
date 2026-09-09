@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "collection-state",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "account",
+    "sourceId",
+    "scope",
+    "startedAt",
+    "runStartedAt",
+    "startPosition",
+    "lastConfirmedPosition",
+    "nextCursor",
+    "discoveredIds",
+    "records",
+    "processed",
+    "deduplication",
+    "resume",
+    "endReached",
+    "coverageKnown",
+    "issues",
+    "status",
+    "outputGeneration"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "enum": [
+        1
+      ]
+    },
+    "account": {
+      "type": "string"
+    },
+    "sourceId": {
+      "type": "string"
+    },
+    "scope": {
+      "enum": [
+        "fixture",
+        "live"
+      ]
+    },
+    "startedAt": {
+      "type": "string"
+    },
+    "runStartedAt": {
+      "type": "string"
+    },
+    "startPosition": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "lastConfirmedPosition": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "nextCursor": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "discoveredIds": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "records": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "actor",
+          "kind",
+          "timestamp",
+          "bundleEvidence",
+          "repostTimestampVerified",
+          "parts"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "actor": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "original",
+              "quote",
+              "repost",
+              "bundle",
+              "reply",
+              "unknown"
+            ]
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "bundleEvidence": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "repostTimestampVerified": {
+            "type": "boolean"
+          },
+          "parts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "id",
+                "timestamp",
+                "text",
+                "label",
+                "orderEvidence",
+                "failure"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "timestamp": {
+                  "type": "string"
+                },
+                "text": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "label": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "orderEvidence": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "failure": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "processed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "disposition"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "disposition": {
+            "enum": [
+              "stored",
+              "media",
+              "reply",
+              "failed"
+            ]
+          }
+        }
+      }
+    },
+    "deduplication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "complete",
+        "duplicates"
+      ],
+      "properties": {
+        "complete": {
+          "type": "boolean"
+        },
+        "duplicates": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "resume": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "supported",
+        "attempts"
+      ],
+      "properties": {
+        "supported": {
+          "type": "boolean"
+        },
+        "attempts": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "endReached": {
+      "type": "boolean"
+    },
+    "coverageKnown": {
+      "type": "boolean"
+    },
+    "issues": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "reason"
+        ],
+        "properties": {
+          "id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "status": {
+      "enum": [
+        "진행 중",
+        "완료",
+        "불완전",
+        "중단"
+      ]
+    },
+    "outputGeneration": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}
