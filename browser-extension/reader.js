@@ -100,6 +100,22 @@ function readThreadsPage(options={}) {
       // The observed UI uses one full text span and a separate localized expansion label.
       // Never strip a suffix from the author's text or follow a different post's media link.
       const validHref=href===`${id}/media` || href===`https://www.threads.com${id}/media`;
+      // Observed photo + location siblings are not missing text. Keep their
+      // presence separately without downloading media or treating alt text as OCR.
+      if(validHref && link.querySelector('img') && !extra.textContent.trim() &&
+          !extra.querySelector('video,button,[role="button"],time')) {
+        (card.notes ??= []).push({type:'image',url:`https://www.threads.com${id}/media`});
+        continue;
+      }
+      if(href?.startsWith('/search?') && !extra.querySelector('img,video,button,[role="button"],time')) {
+        const locationUrl=new URL(href,location.origin);
+        if(/^\d+$/.test(locationUrl.searchParams.get('location_id') || '') &&
+            locationUrl.searchParams.get('serp_type')==='location_tag' &&
+            link.textContent.trim() && extra.textContent.trim()===link.textContent.trim()) {
+          (card.notes ??= []).push({type:'location',text:link.textContent.trim()});
+          continue;
+        }
+      }
       if (!validHref || spans.length!==2 || !spans[0].querySelector('span') ||
           !/^(더 보기|See more|See More|View more)$/.test(spans[1].textContent.trim()) ||
           link.querySelector('img,video,button,[role="button"],time')) {

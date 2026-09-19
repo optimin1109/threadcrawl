@@ -161,6 +161,16 @@ test('완료한 연속글은 맨 위에 N/N 확보를 알리고 각 본문은 �
   assert.match(output, /전체.*개수.*미검증/);
 });
 
+test('목록에서 확보한 연속글과 미저장 이미지·장소를 명확히 표시한다', () => {
+  const cards=[1,2].map(n=>card({id:`/@hongso0921/post/Small${n}`,label:`${n}/2`,text:`본문 ${n}`}));
+  cards[0].notes=[{type:'image',url:`${cards[0].id}/media`},{type:'location',text:'장소 [링크](https://evil.example)'}];
+  const output=exportCaptureMarkdown(capture(cards,{chains:[{rootId:cards[0].id,total:2,status:'complete',completedFrom:'profile',members:cards.map((c,i)=>({part:i+1,id:c.id})),missing:[]}]}));
+  assert.match(output,/프로필 목록/);
+  assert.match(output,/이미지.*저장하지/);
+  assert.doesNotMatch(outsideText(output),/\]\(https:\/\/evil\.example\)/);
+  assert.deepEqual(textBlocks(output),cards.map(c=>c.text));
+});
+
 test('빠진 중간 번호와 충돌 사유는 연속글 경고로 남긴다', () => {
   const cards = [1, 3].map(n => card({ id: `/@hongso0921/post/Chain${n}`, label: `${n}/3`, text: `확보 ${n}` }));
   const output = exportCaptureMarkdown(capture(cards, { chains: [{ rootId: cards[0].id, total: 3, status: 'incomplete', members: cards.map((item, i) => ({ part: i ? 3 : 1, id: item.id })), missing: [2], reason: '2번 본문 미확보' }] }));

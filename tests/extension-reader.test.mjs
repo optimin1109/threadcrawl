@@ -43,6 +43,25 @@ test('unknown extra content is reported instead of silently lost', () => {
   assert.equal(card.text, '소개글');
   assert.ok(card.issues.length);
 });
+
+test('observed image and location siblings do not invalidate a fully read caption', () => {
+  const extra=`<div><a href="${id}/media"><img alt="사진"></a></div><div class="x78zum5 x1gslohp"><a href="/search?location_id=123&amp;q=sample&amp;serp_type=location_tag">장소</a></div>`;
+  const card=read(extra, '본문&nbsp;<div class="x1rg5ohu"><span>1</span><span>/</span><span>2</span></div>').cards[0];
+  assert.equal(card.text,'본문');
+  assert.equal(card.label,'1/2');
+  assert.deepEqual(card.issues,[]);
+  assert.deepEqual(card.notes,[{type:'image',url:`https://www.threads.com${id}/media`},{type:'location',text:'장소'}]);
+  assert.deepEqual(card.attachments,[], 'image bytes and OCR are outside text capture');
+});
+
+test('an image must not mask unrecognized text, another post, or a truncated long attachment', () => {
+  for(const extra of [
+    `<div><a href="${id}/media"><img><span dir="auto">아직 읽지 않은 글</span></a></div>`,
+    '<div><a href="/@other/post/XYZ/media"><img></a></div>',
+    `<div><a href="${id}/media"><img></a><div>알 수 없는 첨부 텍스트</div></div>`,
+    '<div><a href="/search?q=unknown">본문일 수도 있음</a></div>',
+  ]) assert.ok(read(extra).cards[0].issues.length,extra);
+});
 test('does not capture login pages or arbitrary URLs', () => {
   assert.equal(read('', '', 'https://example.com/@sample').blocked, true);
   assert.equal(read('', '', 'https://www.threads.com/login').blocked, true);

@@ -7,17 +7,22 @@ export function mergeCard(previous, incoming) {
   if (!previous) return {card: structuredClone(incoming), issue: null};
   const fields = card => JSON.stringify([card.timestamp, card.text, card.label, card.context, card.attachments]);
   const base = card => JSON.stringify([card.timestamp, card.text, card.label, card.context]);
+  const enrichesLabel = previous.label == null && typeof incoming.label === 'string'
+    && previous.timestamp === incoming.timestamp && previous.text === incoming.text && previous.context === incoming.context;
   const preservesAttachments = previous.attachments.every(old => incoming.attachments.some(next =>
     next.type === old.type && next.url === old.url && next.source === old.source &&
     typeof next.text === 'string' && typeof old.text === 'string' && next.text.startsWith(old.text)));
   let card = structuredClone(previous);
   let issue = null;
   if (fields(previous) !== fields(incoming)) {
-    if (!incoming.issues.length && preservesAttachments && (previous.issues.length || base(previous) === base(incoming)))
+    if (!incoming.issues.length && preservesAttachments
+      && ((previous.issues.length && previous.label === incoming.label) || base(previous) === base(incoming) || enrichesLabel))
       card = structuredClone(incoming);
     else issue = {id: incoming.id, reason: '동일 게시물의 본문/첨부/날짜/분류가 달라짐: 최초 확인 내용 보존'};
   } else if (previous.issues.length && !incoming.issues.length) card = structuredClone(incoming);
   card.groupIds = [...new Set([...previous.groupIds, ...incoming.groupIds])];
+  const notes=[...(previous.notes || []),...(incoming.notes || [])];
+  if(notes.length) card.notes=[...new Map(notes.map(note=>[JSON.stringify(note),structuredClone(note)])).values()];
   return {card, issue};
 }
 export function assertPage(page, account) {

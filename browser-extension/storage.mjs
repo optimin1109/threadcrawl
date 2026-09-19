@@ -7,6 +7,16 @@ const request = value => new Promise((resolve, reject) => {
 const storeNames = ['captures', 'cards', 'issues', 'control', 'chains'];
 const matches = (control, identity) => control?.running && identity.tabId === control.tabId && identity.runId === control.runId;
 const initialNavigation = account => ({mode: 'profile', profilePath: `/@${account}`, activeChain: null, resume: null, visitedRoots: []});
+const chainValidationVersion = 1;
+async function storedMissing(stores, account, chain, members = new Map(chain.members.map(member => [member.part, member.id]))) {
+  const missing = [], conflictParts = new Set((chain.conflicts ?? []).map(item => item.part));
+  for (let part = 1; part <= chain.total; part++) {
+    const item = members.has(part) ? (await request(stores.cards.get([account, members.get(part)])))?.card : null;
+    if (!item || (part === 1 && item.id !== chain.rootId) || item.label !== `${part}/${chain.total}`
+      || typeof item.text !== 'string' || !Array.isArray(item.issues) || item.issues.length || conflictParts.has(part)) missing.push(part);
+  }
+  return missing;
+}
 export class CaptureStore {
   constructor({indexedDB = globalThis.indexedDB, name = 'threads-text-archive-v2'} = {}) {
     this.database = new Promise((resolve, reject) => {
@@ -44,12 +54,36 @@ export class CaptureStore {
       throw error;
     }
   }
+  async validatedMeta(stores, account) {
+    const meta = await request(stores.captures.get(account));
+    if (!meta || meta.chainValidationVersion === chainValidationVersion) return meta;
+    // Upgrade old completion claims once per account, in the same transaction
+    // as their counters. Never alter archived cards to make a claim pass.
+    const rows = await request(stores.chains.index('account').getAll(account));
+    meta.chainCount = rows.length; meta.completedChainCount = 0; meta.incompleteChainCount = 0;
+    for (const row of rows) {
+      const chain = row.chain;
+      if (chain.status === 'complete') {
+        const missing = await storedMissing(stores, account, chain);
+        if (missing.length || chain.conflictDetected || chain.conflicts?.length) {
+          row.chain = {...chain, status: 'incomplete', missing,
+            reason: chain.reason || '기존 완료 기록 재검증: 저장된 게시물의 순번·본문 또는 관계 확인이 끝나지 않음'};
+          stores.chains.put(row);
+        }
+      }
+      meta.completedChainCount += Number(row.chain.status === 'complete');
+      meta.incompleteChainCount += Number(row.chain.status === 'incomplete');
+    }
+    meta.chainValidationVersion = chainValidationVersion;
+    stores.captures.put(meta);
+    return meta;
+  }
   async start(account, tabId, runId, options = {}) {
     return this.transaction('readwrite', async stores => {
-      let meta = await request(stores.captures.get(account));
+      let meta = await this.validatedMeta(stores, account);
       if (!meta) {
         const {cards, issues, ...initial} = newCapture(account, crypto.randomUUID());
-        meta = {...initial, cardCount: 0, issueCount: 0, oldestTimestamp: null, newestTimestamp: null};
+        meta = {...initial, cardCount: 0, issueCount: 0, oldestTimestamp: null, newestTimestamp: null, chainValidationVersion};
       }
       meta.chainCount ??= 0; meta.completedChainCount ??= 0; meta.incompleteChainCount ??= 0;
       meta.status = '진행 중'; meta.reason = null;
@@ -82,6 +116,7 @@ export class CaptureStore {
       const validId = id => typeof id === 'string' && id.startsWith(`/@${control.account}/post/`) && /^\/@[a-z0-9_.]+\/post\/[A-Za-z0-9_-]+$/i.test(id);
       if (!validId(chain?.rootId) || !Number.isInteger(chain.total) || chain.total < 1 || chain.total > 10000 ||
           !['pending', 'complete', 'incomplete'].includes(chain.status) || !Array.isArray(chain.members)) throw new Error('연속글 확인 기록 형식이 잘못되었습니다.');
+      const meta = await this.validatedMeta(stores, control.account);
       const previous = await request(stores.chains.get([control.account, chain.rootId]));
       const members = new Map((previous?.chain.members ?? []).map(member => [member.part, member.id]));
       const conflicts = [...new Map([...(previous?.chain.conflicts ?? []), ...(chain.conflicts ?? [])].map(item => [JSON.stringify(item), item])).values()];
@@ -94,17 +129,13 @@ export class CaptureStore {
         else members.set(member.part, member.id);
       }
       const total = Math.max(previous?.chain.total ?? 0, chain.total);
-      const missing = [];
-      for (let part = 1; part <= total; part++) {
-        if (!members.has(part) || !await request(stores.cards.get([control.account, members.get(part)]))) missing.push(part);
-      }
+      const missing = await storedMissing(stores, control.account, {...chain, total, conflicts}, members);
       if (members.has(1) && members.get(1) !== chain.rootId) conflict = true;
       if (new Set(members.values()).size !== members.size) conflict = true;
       const status = conflict || (chain.status === 'complete' && missing.length) ? 'incomplete' : chain.status;
       const normalized = {...chain, total, status, missing, conflicts, conflictDetected: Boolean(conflict), members: [...members].sort((a, b) => a[0] - b[0]).map(([part, id]) => ({part, id})),
-        reason: conflict ? '연속글 번호·총수·게시물 관계 충돌' : status === 'incomplete' && missing.length ? (chain.reason ?? '번호에 해당하는 저장된 게시물이 없음') : chain.reason ?? null};
+        reason: conflict ? '연속글 번호·총수·게시물 관계 충돌' : status === 'incomplete' && missing.length ? (chain.reason ?? '저장된 게시물의 순번·본문 확인이 끝나지 않음') : chain.reason ?? null};
       stores.chains.put({account: control.account, rootId: chain.rootId, chain: normalized});
-      const meta = await request(stores.captures.get(control.account));
       meta.chainCount = (meta.chainCount ?? 0) + Number(!previous);
       for (const [field, value] of [['completedChainCount', 'complete'], ['incompleteChainCount', 'incomplete']])
         meta[field] = (meta[field] ?? 0) + Number(status === value) - Number(previous?.chain.status === value);
@@ -113,8 +144,9 @@ export class CaptureStore {
     });
   }
   async getChains() {
-    return this.transaction('readonly', async stores => {
+    return this.transaction('readwrite', async stores => {
       const control = await request(stores.control.get('active'));
+      if (control) await this.validatedMeta(stores, control.account);
       return control ? (await request(stores.chains.index('account').getAll(control.account))).map(row => row.chain) : [];
     });
   }
@@ -130,9 +162,9 @@ export class CaptureStore {
     });
   }
   async status() {
-    return this.transaction('readonly', async stores => {
+    return this.transaction('readwrite', async stores => {
       const control = await request(stores.control.get('active'));
-      const capture = control ? await request(stores.captures.get(control.account)) : null;
+      const capture = control ? await this.validatedMeta(stores, control.account) : null;
       return {capture: capture ? {chainCount: 0, completedChainCount: 0, incompleteChainCount: 0, ...capture} : null,
         running: Boolean(control?.running), navigation: control?.navigation ?? (control ? initialNavigation(control.account) : null)};
     });
@@ -173,10 +205,10 @@ export class CaptureStore {
     });
   }
   async exportCapture() {
-    return this.transaction('readonly', async stores => {
+    return this.transaction('readwrite', async stores => {
       const control = await request(stores.control.get('active'));
       if (!control) return null;
-      const meta = await request(stores.captures.get(control.account));
+      const meta = await this.validatedMeta(stores, control.account);
       const rows = await request(stores.cards.index('account').getAll(control.account));
       const issues = await request(stores.issues.index('account').getAll(control.account));
       const chains = await request(stores.chains.index('account').getAll(control.account));

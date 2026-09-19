@@ -31,6 +31,94 @@ test('candidates are distinct own-author roots and completed roots are skipped',
   assert.equal(candidates(page([row(1)]), [{ ...chain(), status: 'incomplete' }]).length, 1);
 });
 
+test('a complete verified profile group does not need a detail visit', () => {
+  const groupIds = [id(1), id(2)];
+  const snapshot = page([row(1, 2, { groupIds }), row(2, 2, { groupIds: [...groupIds].reverse() })]);
+  const original = structuredClone(snapshot);
+  const [result] = plain(candidates(snapshot));
+  assert.equal(result.status, 'complete');
+  assert.equal(result.completedFrom, 'profile');
+  assert.deepEqual(result.members, [{ part: 1, id: id(1) }, { part: 2, id: id(2) }]);
+  assert.deepEqual(result.missing, []);
+  assert.deepEqual(snapshot, original);
+});
+
+test('a clean profile group cannot erase persisted numbering or relationship conflicts', () => {
+  const groupIds = [id(1), id(2)];
+  const snapshot = page([row(1, 2, { groupIds }), row(2, 2, { groupIds })]);
+  for (const prior of [
+    { ...chain(2), status: 'incomplete', conflicts: [{ part: 2, ids: [id(2), '/@sample/post/OtherSecond'] }] },
+    { ...chain(2), status: 'incomplete', conflictDetected: true, reason: '연속글 총수 충돌' },
+    { ...chain(3), status: 'incomplete' },
+  ]) {
+    const original = structuredClone(prior);
+    const [result] = plain(candidates(snapshot, [prior]));
+    assert.notEqual(result.status, 'complete');
+    assert.notEqual(result.completedFrom, 'profile');
+    assert.match(result.reason, /충돌/);
+    if (prior.conflicts) assert.deepEqual(result.conflicts, prior.conflicts);
+    assert.deepEqual(prior, original);
+  }
+});
+
+test('neighboring two-part profile series never supply each other missing members', () => {
+  const otherRoot = '/@sample/post/OtherRoot', otherSecond = '/@sample/post/OtherSecond';
+  const firstGroup = [id(1), id(2)], secondGroup = [otherRoot, otherSecond];
+  const results = plain(candidates(page([
+    row(1, 2, { groupIds: firstGroup }),
+    row(1, 2, { id: otherRoot, groupIds: secondGroup }),
+    row(2, 2, { id: otherSecond, groupIds: secondGroup }),
+  ])));
+  assert.equal(results[0].status, 'pending');
+  assert.deepEqual(results[0].members, [{ part: 1, id: id(1) }]);
+  assert.deepEqual(results[0].missing, [2]);
+  assert.equal(results[1].status, 'complete');
+  assert.deepEqual(results[1].members, [{ part: 1, id: otherRoot }, { part: 2, id: otherSecond }]);
+
+  const mixedGroup = [id(1), otherRoot, otherSecond];
+  const mixed = candidates(page([
+    row(1, 2, { groupIds: mixedGroup }), row(1, 2, { id: otherRoot, groupIds: mixedGroup }),
+    row(2, 2, { id: otherSecond, groupIds: mixedGroup }),
+  ]));
+  assert.ok(mixed.every(result => result.status !== 'complete'));
+  assert.ok(mixed.every(result => result.members.length === 0), 'ambiguous neighboring groups must not seed another series members');
+});
+
+test('profile adjacency without matching group evidence still requires a detail visit', () => {
+  const groupIds = [id(1), id(2)];
+  for (const cards of [
+    [row(1, 2), row(2, 2)],
+    [row(1, 2, { groupIds }), row(2, 2)],
+    [row(1, 2, { groupIds }), row(2, 2, { groupIds: [id(2), '/@sample/post/OtherRoot'] })],
+  ]) {
+    const [result] = plain(candidates(page(cards)));
+    assert.equal(result.status, 'pending');
+    assert.ok(result.missing.includes(2));
+    assert.notEqual(result.completedFrom, 'profile');
+  }
+});
+
+test('unresolved bodies, another author, and another denominator cannot complete profile groups', () => {
+  for (const invalid of [
+    { text: null }, { issues: [{ reason: '본문 구조 미확인' }] }, { issues: undefined },
+    { id: '/@other/post/P2' }, { label: '2/3' }, { label: '1/2' },
+  ]) {
+    const second = row(2, 2, invalid), groupIds = [id(1), second.id];
+    const [result] = plain(candidates(page([row(1, 2, { groupIds }), { ...second, groupIds }])));
+    assert.equal(result.status, 'pending');
+    assert.ok(result.missing.includes(2));
+  }
+});
+
+test('profile completion needs all current verified bodies even if old members were saved', () => {
+  const groupIds = [id(1), id(2)];
+  const prior = { ...chain(2), status: 'incomplete', members: [{ part: 1, id: id(1) }, { part: 2, id: id(2) }], missing: [] };
+  const [result] = plain(candidates(page([row(1, 2, { groupIds })]), [prior]));
+  assert.equal(result.status, 'pending');
+  assert.deepEqual(result.members, [{ part: 1, id: id(1) }]);
+  assert.deepEqual(result.missing, [2]);
+});
+
 test('20/20 is complete only after verified detail pages accumulate every numbered body', () => {
   const initial = chain();
   const first = detail(Array.from({ length: 10 }, (_, i) => row(i + 1)));

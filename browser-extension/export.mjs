@@ -97,6 +97,7 @@ function chainMarkdown(chain, cards) {
     if (!complete && !missing.length) pieces.push('경고: 번호별 본문은 있으나 연속글 완료 확인이 끝나지 않았습니다.');
   }
   if (chain?.reason) pieces.push(`확인 사항: ${inline(chain.reason)}`);
+  if(chain?.completedFrom==='profile') pieces.push('확보 화면: 프로필 목록의 동일 연속글 묶음. 상세 화면을 추가로 열지 않았습니다.');
   return pieces.join('\n\n');
 }
 
@@ -113,6 +114,10 @@ function cardMarkdown(card, date) {
     pieces.push(`화면에서 함께 관측한 식별자(최초 작성 묶음의 증거가 아님):\n${card.groupIds.map(id => `- ${inline(id)}`).join('\n')}`);
   }
   pieces.push(bodyText(card.text, '본문'));
+  for(const note of card.notes || []) {
+    if(note?.type==='image') pieces.push(`이미지 원본과 이미지 속 글자는 저장하지 않았습니다. ${sourceLink('이미지 보기',note.url,true)}`);
+    if(note?.type==='location') pieces.push(`장소 태그: ${inline(note.text)}`);
+  }
   for (const [index, attachment] of (card.attachments ?? []).entries()) {
     const type = attachment?.type === 'long-text' ? '긴 첨부' : '첨부(유형 미확인)';
     pieces.push(`### ${type} ${index + 1}`);
@@ -141,7 +146,7 @@ export function exportCaptureMarkdown(capture) {
   const issues = issueLines(capture.issues);
   if (issues) parts.push(issues);
   if (Array.isArray(capture.chains) && capture.chains.length) {
-    parts.push('## 연속글 확보 상태', '완료는 해당 상세 화면에서 1번부터 마지막 번호까지 본문을 확보했다는 뜻입니다. 계정의 전체 글 확보나 최초 동시 작성 여부를 뜻하지 않습니다.');
+    parts.push('## 연속글 확보 상태', '완료는 같은 묶음의 목록 또는 상세 화면에서 1번부터 마지막 번호까지 텍스트 본문을 확보했다는 뜻입니다. 이미지 속 글자·계정의 전체 글 확보나 최초 동시 작성 여부를 뜻하지 않습니다.');
     parts.push(...capture.chains.map(chain => chainMarkdown(chain, capture.cards)));
   }
   const ordered = capture.cards.map((card, index) => ({ card, index, date: dateOf(card.timestamp) }))

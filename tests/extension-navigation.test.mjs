@@ -6,16 +6,24 @@ import {JSDOM} from 'jsdom';
 const file = name => new URL(`../browser-extension/${name}`,import.meta.url);
 const source = name => readFileSync(file(name),'utf8');
 const flush=async()=>{for(let i=0;i<40;i++)await Promise.resolve();};
-function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,redirectOnCheckpoint=null}={}) {
+function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,redirectOnCheckpoint=null,
+  mutateDetailSnapshots=false,missingRegionA=false,expandUnrelatedReplies=false,profileCompleteA=false,
+  imageInProfileA=false,progressiveDetailA=false,detailTimeoutMs=120000,
+  downgradeProfileCompleteA=false,downgradeDetailCompleteA=false}={}) {
   const badge=(part,n)=>`<div class="x1rg5ohu"><span>${part}</span><span>/</span><span>${n}</span></div>`;
   const row=(prefix,part,n,detail=false,owner='sample')=>`<div data-pressable-container="true"><a href="/@${owner}/post/${prefix}${part}"><time datetime="2026-09-19T04:00:00Z"></time></a>${detail?badge(part,n):''}<div class="${detail?'xqti54a x49hn82 xcrlgei x889kno':'x1xdureb xkbb5z'} x13vxnyz"><div><div class="x1a6qonq"><div><span dir="auto">${prefix} ${part} 본문${detail?'':badge(part,n)}</span></div></div><div><button>좋아요</button></div></div></div></div>`;
   const region=html=>`<main data-column-scrollable role="region">${html}</main>`;
-  const profile=()=>region(row('A',1,total)+row('A',2,total)+row('B',1,3)+row('B',2,3));
+  const profile=()=>{
+    let first=row('A',1,total);
+    if(imageInProfileA)first=first.replace('<div><button>', '<div><a href="/@sample/post/A1/media"><img alt="사진"></a></div><div><a href="/search?location_id=123&amp;serp_type=location_tag">장소</a></div><div><button>');
+    return region((profileCompleteA?'<div data-virtualized="true">':'')+first+row('A',2,total)
+      +(profileCompleteA?'</div>':'')+row('B',1,3)+row('B',2,3));
+  };
   const dom=new JSDOM(profile(),{url:'https://www.threads.com/@sample',runScripts:'outside-only',pretendToBeVisual:true});
   const w=dom.window,messages=[],events=[],timers=new Map();
   w.structuredClone=structuredClone;
-  let now=1000,nextId=0,top=400,layoutShift=0,release;
-  const restoredPositions=[];
+  let now=1000,nextId=0,top=400,layoutShift=0,detailSnapshotCount=0,visibleParts=1,release;
+  const restoredPositions=[],expansionTimes=[];
   const pending=new Promise(r=>release=r);
   w.Date.now=()=>now;
   w.setTimeout=(fn,delay=0)=>{timers.set(++nextId,{fn,at:now+delay});return nextId;};
@@ -23,7 +31,11 @@ function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,
   Object.defineProperty(w.document,'scrollingElement',{value:w.document.documentElement});
   const scroller=w.document.documentElement;
   Object.defineProperties(scroller,{scrollTop:{get:()=>top,set:value=>{top=value;}},clientHeight:{value:600},scrollHeight:{value:4000}});
-  scroller.scrollBy=({top:delta})=>{top+=delta;events.push('scroll');};
+  scroller.scrollBy=({top:delta})=>{
+    top+=delta;events.push('scroll');
+    if(progressiveDetailA&&w.location.pathname==='/@sample/post/A1'&&visibleParts<total)
+      w.document.querySelector('main').insertAdjacentHTML('beforeend',row('A',++visibleParts,total));
+  };
   scroller.scrollTo=({top:value})=>{top=value;restoredPositions.push(value);events.push('restore');};
   w.HTMLAnchorElement.prototype.getBoundingClientRect=function(){
     const base=this.getAttribute('href').includes('/A')?500:1100;
@@ -34,17 +46,37 @@ function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,
     if(anchor?.querySelector('time')) {
       event.preventDefault();const id=anchor.getAttribute('href');const prefix=id.includes('/A')?'A':'B',n=prefix==='A'?total:3;
       events.push(`open:${prefix}`);top=0;w.history.replaceState({},'',id);
-      w.document.body.innerHTML='<button aria-label="돌아가기">돌아가기</button>'+region(Array.from({length:n},(_,i)=>i+1).filter(i=>!(prefix==='A'&&i===missing)).map(i=>row(prefix,i,n,i===1)).join('')+row('X',3,n,false,'outsider'));
+      w.document.body.innerHTML='<button aria-label="돌아가기">돌아가기</button>'+(prefix==='A'&&missingRegionA?'<p>목록 로딩 중</p>':region(Array.from({length:n},(_,i)=>i+1).filter(i=>!(prefix==='A'&&i===missing)&&!(prefix==='A'&&progressiveDetailA&&i>1)).map(i=>row(prefix,i,n,i===1)).join('')+row('X',3,n,false,'outsider')+(prefix==='A'&&expandUnrelatedReplies?'<button id="more-replies">답글 1000개 더 보기</button>':'')));
     } else if(event.target.closest('button[aria-label="돌아가기"]')) {
       events.push('back');top=0;layoutShift+=200;w.history.replaceState({},'','/@sample');w.document.body.innerHTML=returnSecurity?'<h1>보안 확인</h1><input type="password">':profile();
+    } else if(event.target.id==='more-replies'){
+      expansionTimes.push(now);event.target.textContent=`답글 ${1000-expansionTimes.length}개 더 보기`;
     }
   });
   w.chrome={runtime:{sendMessage:message=>{
     messages.push(JSON.parse(JSON.stringify(message)));events.push(message.type);
     if(message.type==='checkpoint'&&message.navigation.mode===redirectOnCheckpoint)w.history.replaceState({},'','/@other');
-    return message.type==='snapshot' && holdSnapshot ? pending : Promise.resolve({ok:true});
+    if(mutateDetailSnapshots&&message.type==='snapshot'&&message.page.detailRoot==='/@sample/post/A1'){
+      const text=w.document.querySelector('.x49hn82 .x1a6qonq span[dir="auto"]');
+      text.firstChild.textContent=`저장 중 바뀐 본문 ${++detailSnapshotCount}`;
+    }
+    let result={ok:true};
+    if(message.type==='chain'){
+      const chain=structuredClone(message.chain);
+      if(chain.rootId==='/@sample/post/A1'&&chain.status==='complete'&&
+          ((downgradeProfileCompleteA&&w.location.pathname==='/@sample') || (downgradeDetailCompleteA&&w.location.pathname==='/@sample/post/A1'))){
+        chain.status='incomplete';chain.members=chain.members.filter(member=>member.part!==chain.total);
+        chain.missing=[chain.total];chain.reason=`저장된 ${chain.total}번 본문 검증 실패`;
+      }
+      result={ok:true,chain};
+    }
+    const response=message.type==='snapshot' && holdSnapshot ? pending : Promise.resolve(result);
+    return response.then(value=>{
+      events.push(`ack:${message.type}${message.type==='chain'?`:${value.chain?.status || message.chain.status}`:''}`);
+      return value;
+    });
   },onMessage:{addListener(){},removeListener(){}}}};
-  w.threadsArchiveConfig={runId:'run',intervalMs:1500,maxRounds:1800,startedAt:now,navigation:{mode:'profile',profilePath:'/@sample',activeChain:null,resume:null,visitedRoots:[]},chains:[]};
+  w.threadsArchiveConfig={runId:'run',intervalMs:1500,maxRounds:1800,detailTimeoutMs,startedAt:now,navigation:{mode:'profile',profilePath:'/@sample',activeChain:null,resume:null,visitedRoots:[]},chains:[]};
   w.eval(source('reader.js'));
   if(existsSync(file('chains.js')))w.eval(source('chains.js'));
   w.eval(source('content.js'));
@@ -55,7 +87,18 @@ function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,
       timers.delete(next[0]);now=next[1].at;await next[1].fn();await flush();
     }
   }
-  return {dom,w,messages,events,restoredPositions,advance,release,stop:()=>{w.threadsArchiveStop();dom.window.close();}};
+  const reload=()=>{
+    const navigation=messages.filter(message=>message.type==='checkpoint').at(-1).navigation;
+    w.threadsArchiveConfig={...w.threadsArchiveConfig,runId:'reloaded-run',navigation:structuredClone(navigation)};
+    w.eval(source('content.js'));
+  };
+  return {dom,w,messages,events,restoredPositions,expansionTimes,advance,release,reload,stop:()=>{w.threadsArchiveStop();dom.window.close();}};
+}
+function assertAckedIncompleteReturn(h) {
+  const back=h.events.indexOf('back');
+  assert.ok(back>=0);
+  assert.deepEqual(h.events.slice(back-4,back),['chain','ack:chain:incomplete','checkpoint','ack:checkpoint'],
+    'incomplete chain and navigation must both be acknowledged before clicking Back');
 }
 test('opens each profile chain, saves twelve parts, returns, and continues to another post',async()=>{
   const h=harness();await h.advance(15);
@@ -100,4 +143,127 @@ for(const mode of ['opening','returning'])test(`does not click a stale control a
   assert.equal(h.w.location.pathname,'/@other');
   assert.ok(!h.events.includes(mode==='opening'?'open:A':'back'));
   h.stop();
+});
+
+test('detail snapshots that mutate during every save still retain progress and return after 30 seconds without a new part',async()=>{
+  const h=harness({total:2,missing:2,mutateDetailSnapshots:true});
+  try{
+    await h.advance(450);
+    const reports=h.messages.filter(m=>m.type==='chain'&&m.chain.rootId==='/@sample/post/A1');
+    assert.ok(reports.some(m=>m.chain.members.some(member=>member.part===1)),'acknowledged snapshots contribute numbered bodies even while DOM changes');
+    assert.ok(h.events.includes('back'),'continuous DOM changes must not bypass the detail timeout');
+    assertAckedIncompleteReturn(h);
+    assert.equal(reports.at(-1).chain.status,'incomplete');
+    assert.deepEqual(reports.at(-1).chain.missing,[2]);
+  }finally{h.stop();}
+});
+
+test('a detail deadline returns even when its list never appears',async()=>{
+  const h=harness({missingRegionA:true,detailTimeoutMs:4500});
+  try{
+    await h.advance(12);
+    assert.ok(h.events.includes('back'));
+    assertAckedIncompleteReturn(h);
+    const report=h.messages.filter(m=>m.type==='chain'&&m.chain.rootId==='/@sample/post/A1').at(-1);
+    assert.equal(report.chain.status,'incomplete');
+    assert.match(report.chain.reason,/시간 상한/);
+    assert.ok(h.events.includes('open:B'));
+  }finally{h.stop();}
+});
+
+test('the absolute detail deadline is independent of repeated snapshot mutations',async()=>{
+  const h=harness({total:2,missing:2,mutateDetailSnapshots:true,detailTimeoutMs:4500});
+  try{
+    await h.advance(75);
+    const report=h.messages.filter(m=>m.type==='chain'&&m.chain.rootId==='/@sample/post/A1').at(-1);
+    assert.equal(report.chain.status,'incomplete');
+    assert.match(report.chain.reason,/시간 상한/);
+    assert.ok(h.events.includes('back'));
+    assertAckedIncompleteReturn(h);
+  }finally{h.stop();}
+});
+
+test('reply expansion is rate limited and cannot postpone the no-progress return',async()=>{
+  const h=harness({total:2,missing:2,expandUnrelatedReplies:true});
+  try{
+    await h.advance(450);
+    assert.ok(h.expansionTimes.length>1);
+    for(let i=1;i<h.expansionTimes.length;i++)assert.ok(h.expansionTimes[i]-h.expansionTimes[i-1]>=1500,'DOM mutations must not accelerate reply clicks');
+    assert.ok(h.events.includes('back'));
+    assertAckedIncompleteReturn(h);
+    const report=h.messages.filter(m=>m.type==='chain'&&m.chain.rootId==='/@sample/post/A1').at(-1);
+    assert.equal(report.chain.status,'incomplete');
+  }finally{h.stop();}
+});
+
+test('a fully verified profile 2/2 group with an image is saved without opening it, then another root is visited',async()=>{
+  const h=harness({total:2,profileCompleteA:true,imageInProfileA:true});
+  try{
+    await h.advance(15);
+    const report=h.messages.find(m=>m.type==='chain'&&m.chain.rootId==='/@sample/post/A1'&&m.chain.status==='complete');
+    assert.ok(report);
+    assert.deepEqual(report.chain.members.map(member=>member.part),[1,2]);
+    assert.equal(report.chain.completedFrom,'profile');
+    const root=h.messages.find(message=>message.type==='snapshot').page.cards[0];
+    assert.deepEqual(root.issues,[]);
+    assert.deepEqual(root.notes.map(note=>note.type),['image','location']);
+    assert.ok(!h.events.includes('open:A'));
+    assert.ok(h.events.includes('open:B'));
+  }finally{h.stop();}
+});
+
+test('new numbered bodies do not reset the absolute detail deadline',async()=>{
+  const h=harness({total:20,progressiveDetailA:true,detailTimeoutMs:4500});
+  try{
+    await h.advance(20);
+    const report=h.messages.filter(message=>message.type==='chain'&&message.chain.rootId==='/@sample/post/A1').at(-1);
+    assert.ok(report.chain.members.length>1&&report.chain.members.length<20);
+    assert.equal(report.chain.status,'incomplete');
+    assert.match(report.chain.reason,/시간 상한/);
+    assert.ok(h.events.includes('back'));
+    assertAckedIncompleteReturn(h);
+  }finally{h.stop();}
+});
+
+test('reinjecting from a detail checkpoint preserves the original per-detail deadline',async()=>{
+  const h=harness({total:2,missing:2,detailTimeoutMs:4500});
+  try{
+    await h.advance(2);
+    const before=h.messages.filter(message=>message.type==='checkpoint'&&message.navigation.mode==='detail').at(-1).navigation.detailStartedAt;
+    assert.equal(before,1000);
+    h.reload();await h.advance(3);
+    const report=h.messages.filter(message=>message.type==='chain'&&message.chain.rootId==='/@sample/post/A1').at(-1);
+    assert.equal(report.chain.status,'incomplete');
+    assert.match(report.chain.reason,/시간 상한/);
+    assert.ok(h.events.includes('back'));
+    assertAckedIncompleteReturn(h);
+  }finally{h.stop();}
+});
+
+test('a profile-complete chain downgraded by storage is attempted in detail with normalized state',async()=>{
+  const h=harness({total:2,profileCompleteA:true,downgradeProfileCompleteA:true});
+  try{
+    await h.advance(15);
+    assert.equal(h.events.filter(event=>event==='open:A').length,1);
+    const opening=h.messages.find(message=>message.type==='checkpoint'&&message.navigation.mode==='opening'&&message.navigation.activeChain.rootId==='/@sample/post/A1');
+    assert.equal(opening.navigation.activeChain.status,'incomplete');
+    assert.deepEqual(opening.navigation.activeChain.missing,[2]);
+    assert.equal(opening.navigation.activeChain.reason,'저장된 2번 본문 검증 실패');
+    assert.equal(opening.navigation.activeChain.completedFrom,undefined,'a detail retry must not claim it was captured only on the profile');
+    assert.ok(h.events.includes('open:B'));
+  }finally{h.stop();}
+});
+
+test('a detail-complete chain downgraded by storage returns with the normalized missing part and reason',async()=>{
+  const h=harness({total:2,downgradeDetailCompleteA:true});
+  try{
+    await h.advance(15);
+    const returning=h.messages.find(message=>message.type==='checkpoint'&&message.navigation.mode==='returning'&&message.navigation.activeChain.rootId==='/@sample/post/A1');
+    assert.equal(returning.navigation.activeChain.status,'incomplete');
+    assert.deepEqual(returning.navigation.activeChain.missing,[2]);
+    assert.equal(returning.navigation.activeChain.reason,'저장된 2번 본문 검증 실패');
+    assert.equal(h.events.filter(event=>event==='open:A').length,1);
+    assertAckedIncompleteReturn(h);
+    assert.ok(h.events.includes('open:B'));
+  }finally{h.stop();}
 });

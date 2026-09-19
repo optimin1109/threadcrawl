@@ -12,6 +12,11 @@
     const part = Number(match[1]), total = Number(match[2]);
     return part <= total && total <= 1000 ? { part, total } : null;
   }
+  function profileGroup(card, author) {
+    if (!Array.isArray(card.groupIds) || !card.groupIds.includes(card.id)
+      || card.groupIds.some(id => owner(id) !== author)) return null;
+    return [...new Set(card.groupIds)].sort();
+  }
   function candidates(page, knownChains = []) {
     if (!page || page.blocked || typeof page.account !== 'string') return [];
     const completed = new Set(knownChains.filter(chain => chain.status === 'complete').map(chain => chain.rootId));
@@ -20,8 +25,26 @@
       const label = parseLabel(card.label);
       if (!label || label.part !== 1 || label.total <= 1 || owner(card.id) !== page.account.toLowerCase()
         || completed.has(card.id) || roots.has(card.id)) continue;
-      roots.set(card.id, { rootId: card.id, total: label.total, status: 'pending', members: [],
-        missing: sequence(label.total), reason: null, updatedAt: updatedAt(page) });
+      let candidate = { rootId: card.id, total: label.total, status: 'pending', members: [],
+        missing: sequence(label.total), reason: null, updatedAt: updatedAt(page) };
+      const previous = knownChains.find(chain => chain.rootId === card.id);
+      if (previous?.conflicts?.length) candidate.conflicts = previous.conflicts;
+      if (previous?.conflictDetected || (previous && previous.total !== label.total)) {
+        candidate.conflictDetected = true;
+        candidate.reason = previous.reason || '연속글 총수 충돌: 완료 확인 불가';
+      }
+      const group = page.view === 'profile' && profileGroup(card, page.account.toLowerCase());
+      // More IDs than numbered parts can contain neighboring roots/replies;
+      // do not carry those speculative members into a later detail visit.
+      if (group && group.length <= label.total) {
+        const key = JSON.stringify(group);
+        const cards = page.cards.filter(member => group.includes(member.id)
+          && JSON.stringify(profileGroup(member, page.account.toLowerCase())) === key);
+        candidate = collect(candidate, { ...page, cards });
+        if (candidate.status === 'complete' && group.length === label.total) candidate.completedFrom = 'profile';
+        else candidate.status = 'pending';
+      }
+      roots.set(card.id, candidate);
     }
     return [...roots.values()];
   }
@@ -29,6 +52,10 @@
     const author = owner(chain?.rootId), total = chain?.total;
     if (!author || !Number.isInteger(total) || total < 2 || total > 1000 || !page || page.blocked
       || page.view !== 'detail' || page.detailRoot !== chain.rootId || page.account?.toLowerCase() !== author) return chain;
+    return collect(chain, page);
+  }
+  function collect(chain, page) {
+    const author = owner(chain.rootId), total = chain.total;
     const byPart = new Map(), conflicts = new Set();
     const add = (part, id) => {
       if (!Number.isInteger(part) || part < 1 || part > total || owner(id) !== author || (part === 1 && id !== chain.rootId)) return;
