@@ -25,7 +25,7 @@ Meta 검수, 유료 수집기 추가 실행, 비공개 API·쿠키 접근, 전�
 - [x] **Step 1: Implementation** — reader 긴 첨부/순번, 저장소 IndexedDB, ack 뒤 스크롤, 실행 ID, JSON v2/Markdown 내보내기.
 - [x] **Step 2a: Tests** — 56개 통과. 합성 DOM 회귀, 저장소 원자성/복구/중복/오래된 메시지, 실제 원문 첨부 7,835자·62 LF 문자열 일치 확인.
 - [ ] **Step 2b: Browser installation** — chrome://extensions 접근이 브라우저 도구 URL 정책에 의해 차단. 우회하지 않고 사용자 설치 후 실행 확인 대기.
-- [ ] **Step 3: Rollout / Rollback** — 압축해제 확장 설치 경로와 결과 기록, 별도 커밋/푸시/초안 PR.
+- [x] **Step 3: Rollout / Rollback** — 압축해제 확장 설치 경로와 결과 기록, 별도 커밋/푸시/[초안 PR #2](https://github.com/optimin1109/threadcrawl/pull/2).
 
 ## Validation
 - **Commands to run:** npm run test:extension; npm test; git diff --check; 원본 상태 비교.
