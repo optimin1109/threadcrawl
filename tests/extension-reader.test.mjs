@@ -58,3 +58,38 @@ test('hidden login and dialogs do not stop a visible profile', () => {
   assert.equal(page.cards[0].text, '본문');
   assert.equal(read('', '', undefined, '<div role="dialog">로그인</div>').blocked, true);
 });
+
+function detailDom() {
+  const badge = part => `<div class="x1rg5ohu"><span>${part}</span><span>/</span><span>12</span></div>`;
+  const row = (account, part, root = false) => `<div data-pressable-container="true"><a href="/@${account}/post/P${part}"><time datetime="2026-09-19T04:00:00Z"></time></a>${root ? badge(part) : ''}<div class="${root ? 'xqti54a x49hn82 xcrlgei x889kno' : 'x1xdureb xkbb5z'} x13vxnyz"><div><div class="x1a6qonq"><div><span dir="auto">${part}편 본문${root ? '' : badge(part)}</span></div></div><div><button>좋아요</button></div></div></div></div>`;
+  const dom = new JSDOM(`<div style="display:none"><main role="region" data-column-scrollable>${row('unrelated', 1)}</main></div><main role="region" data-column-scrollable>${Array.from({length:12}, (_,i)=>row('sample',i+1,i===0)).join('')}${row('outsider',3)}</main>`, {url:'https://www.threads.com/@sample/post/P1',runScripts:'outside-only'});
+  dom.window.eval(source);
+  return dom;
+}
+test('reads all twelve owner parts in the active detail region including the expanded root layout', () => {
+  const dom=detailDom();
+  const page=JSON.parse(JSON.stringify(dom.window.readThreadsPage({account:'sample',detailRoot:'/@sample/post/P1'})));
+  assert.equal(page.blocked,false);
+  assert.equal(page.view,'detail');
+  assert.equal(page.detailRoot,'/@sample/post/P1');
+  assert.equal(page.cards.length,12);
+  assert.equal(page.cards[0].text,'1편 본문');
+  assert.equal(page.cards[0].label,'1/12');
+  assert.equal(page.cards[11].text,'12편 본문');
+  assert.equal(page.cards[11].label,'12/12');
+  assert.ok(page.cards.every(c=>c.issues.length===0 && c.context==='threads'));
+  dom.window.close();
+});
+test('refuses a different detail post from the expected navigation checkpoint', () => {
+  const dom=detailDom();
+  assert.equal(dom.window.readThreadsPage({account:'sample',detailRoot:'/@sample/post/Other'}).blocked,true);
+  dom.window.close();
+});
+test('selects a scrollable ancestor instead of a tall overflow-visible region', () => {
+  const dom=new JSDOM('<section style="overflow-y:auto"><main role="region" data-column-scrollable style="overflow-y:visible"></main></section>',{url:'https://www.threads.com/@sample',runScripts:'outside-only'});
+  const region=dom.window.document.querySelector('main'), parent=region.parentElement;
+  for(const el of [region,parent]) {Object.defineProperty(el,'scrollHeight',{value:1200});Object.defineProperty(el,'clientHeight',{value:600});}
+  dom.window.eval(source);
+  assert.equal(dom.window.threadsArchiveScroller(region),parent);
+  dom.window.close();
+});

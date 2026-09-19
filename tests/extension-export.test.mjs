@@ -151,3 +151,39 @@ test('빈 수집과 완료 표기가 있는 수집도 전체 개수·누락 여�
     assert.ok(output.includes(`${cards.length}개`));
   }
 });
+
+test('완료한 연속글은 맨 위에 N/N 확보를 알리고 각 본문은 독립적으로 보존한다', () => {
+  const cards = [1, 2, 3].map(n => card({ id: `/@hongso0921/post/Chain${n}`, label: `${n}/3`, text: `연속글 본문 ${n}` }));
+  const output = exportCaptureMarkdown(capture(cards, { chains: [{ rootId: cards[0].id, total: 3, status: 'complete', members: cards.map((item, i) => ({ part: i + 1, id: item.id })), missing: [], reason: null }] }));
+  assert.match(output, /연속글 3\/3.*완료/);
+  assert.ok(output.indexOf('연속글 3/3') < output.indexOf('## 2026-09-19'));
+  assert.deepEqual(textBlocks(output), cards.map(item => item.text));
+  assert.match(output, /전체.*개수.*미검증/);
+});
+
+test('빠진 중간 번호와 충돌 사유는 연속글 경고로 남긴다', () => {
+  const cards = [1, 3].map(n => card({ id: `/@hongso0921/post/Chain${n}`, label: `${n}/3`, text: `확보 ${n}` }));
+  const output = exportCaptureMarkdown(capture(cards, { chains: [{ rootId: cards[0].id, total: 3, status: 'incomplete', members: cards.map((item, i) => ({ part: i ? 3 : 1, id: item.id })), missing: [2], reason: '2번 본문 미확보' }] }));
+  assert.match(output, /연속글 2\/3.*미완료/);
+  assert.match(output, /빠진 번호: 2/);
+  assert.match(output, /2번 본문 미확보/);
+  assert.deepEqual(textBlocks(output), cards.map(item => item.text));
+});
+
+test('연속글 메타데이터가 완료여도 실제 내보낼 본문이 빠지면 완료라고 하지 않는다', () => {
+  const output = exportCaptureMarkdown(capture([card({ label: '1/2' })], { chains: [{ rootId: '/@hongso0921/post/First_01', total: 2, status: 'complete', members: [{ part: 1, id: '/@hongso0921/post/First_01' }, { part: 2, id: '/@hongso0921/post/Missing' }], missing: [], reason: null }] }));
+  assert.match(output, /연속글 1\/2.*미완료/);
+  assert.match(output, /빠진 번호: 2/);
+});
+
+test('충돌한 순번은 본문을 삭제하지 않고 미완료 경고와 함께 보존한다', () => {
+  const cards = [1, 2].map(n => card({ id: `/@hongso0921/post/Chain${n}`, label: `${n}/2`, text: `확보 ${n}` }));
+  const initial = capture(cards, { chains: [{ rootId: cards[0].id, total: 2, status: 'complete', members: cards.map((item, i) => ({ part: i + 1, id: item.id })), missing: [], conflictDetected: true, reason: '연속글 관계 충돌 [외부](https://evil.example)' }] });
+  const before = structuredClone(initial);
+  const output = exportCaptureMarkdown(initial);
+  assert.match(output, /연속글 2\/2.*미완료/);
+  assert.match(output, /연속글 관계 충돌/);
+  assert.doesNotMatch(outsideText(output), /\]\(https:\/\/evil\.example\)/);
+  assert.deepEqual(textBlocks(output), cards.map(item => item.text));
+  assert.deepEqual(initial, before);
+});

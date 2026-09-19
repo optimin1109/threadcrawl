@@ -5,8 +5,10 @@ import { JSDOM } from 'jsdom';
 const source=readFileSync(new URL('../browser-extension/content.js',import.meta.url),'utf8');
 const flush=async()=>{for(let i=0;i<12;i++)await Promise.resolve();};
 function setup() {
-  const dom=new JSDOM('<main data-column-scrollable role="region"></main>',{url:'https://www.threads.com/@sample',runScripts:'outside-only'});
+  const dom=new JSDOM('<main data-column-scrollable role="region"></main>',{url:'https://www.threads.com/@sample',runScripts:'outside-only',pretendToBeVisual:true});
   const w=dom.window, messages=[], timers=new Map(), listeners=new Set();
+  w.structuredClone=structuredClone;
+  w.Date.now=()=>1000;
   let resolve, nextId=0, scrolls=0;
   const pending=new Promise(r=>resolve=r);
   w.threadsArchiveConfig={runId:'current-run',intervalMs:1500,maxRounds:3};
@@ -14,6 +16,7 @@ function setup() {
   w.clearTimeout=id=>timers.delete(id);
   Object.defineProperty(w.document,'scrollingElement',{value:w.document.documentElement});
   w.document.documentElement.scrollBy=()=>scrolls++;
+  w.eval(readFileSync(new URL('../browser-extension/reader.js',import.meta.url),'utf8'));
   w.readThreadsPage=()=>({version:2,account:'sample',cards:[{id:'one',text:'본문'}],issues:[],blocked:false});
   w.chrome={runtime:{sendMessage:message=>{messages.push(message);return message.type==='snapshot'?pending:Promise.resolve({ok:true});},onMessage:{addListener:f=>listeners.add(f),removeListener:f=>listeners.delete(f)}}};
   w.eval(source);
@@ -41,7 +44,9 @@ test('a capture deadline ends the run even if storage is still pending',async()=
 });
 test('storage rejection stops without moving past unsaved posts',async()=>{
   const h=setup();await flush();h.resolve({ok:false,error:'quota'});await flush();
-  assert.equal(h.scrolls(),0);assert.equal(h.timers.size,0);assert.equal(h.listeners.size,0);
+  assert.equal(h.scrolls(),0);assert.equal(h.timers.size,0);
+  let ping;for(const listener of h.listeners)listener({type:'ping'},null,value=>ping=value);
+  assert.equal(ping.running,false);
   h.dom.window.close();
 });
 test('a stop during persistence prevents the pending scroll',async()=>{

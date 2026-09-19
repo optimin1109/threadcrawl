@@ -68,6 +68,38 @@ function bodyText(value, label) {
   return `${label} 형식 미확인 — 확보 값을 보존합니다.\n\n${literalBlock(value)}`;
 }
 
+function chainMarkdown(chain, cards) {
+  const root = threadsUrl(chain?.rootId);
+  const total = chain?.total;
+  const pieces = [sourceLink('연속글 첫 글', chain?.rootId)];
+  if (!root || !Number.isInteger(total) || total < 2 || total > 1000) {
+    pieces.unshift('연속글 미완료 — 첫 글 주소 또는 전체 번호를 확인할 수 없습니다.');
+  } else {
+    const owner = new URL(root).pathname.split('/')[1].toLowerCase();
+    const byPart = new Map();
+    for (const member of chain.members || []) {
+      const item = cards.find(card => card.id === member.id);
+      const url = threadsUrl(member.id);
+      if (!item || !url || !Number.isInteger(member.part) || member.part < 1 || member.part > total
+        || new URL(url).pathname.split('/')[1].toLowerCase() !== owner
+        || (member.part === 1 && member.id !== chain.rootId)
+        || item.label !== `${member.part}/${total}` || typeof item.text !== 'string'
+        || !Array.isArray(item.issues) || item.issues.length) continue;
+      if (!byPart.has(member.part)) byPart.set(member.part, new Set());
+      byPart.get(member.part).add(member.id);
+    }
+    const conflictParts = new Set((chain.conflicts || []).map(item => item.part));
+    const found = new Set([...byPart].filter(([part, ids]) => ids.size === 1 && !conflictParts.has(part)).map(([part]) => part));
+    const missing = Array.from({ length: total }, (_, i) => i + 1).filter(part => !found.has(part));
+    const complete = chain.status === 'complete' && !missing.length && !conflictParts.size && !chain.conflictDetected;
+    pieces.unshift(`연속글 ${found.size}/${total} 확보 · ${complete ? '완료' : '미완료'}`);
+    if (missing.length) pieces.push(`빠진 번호: ${missing.join(', ')}. 해당 본문 확보를 확인할 수 없습니다.`);
+    if (!complete && !missing.length) pieces.push('경고: 번호별 본문은 있으나 연속글 완료 확인이 끝나지 않았습니다.');
+  }
+  if (chain?.reason) pieces.push(`확인 사항: ${inline(chain.reason)}`);
+  return pieces.join('\n\n');
+}
+
 function cardMarkdown(card, date) {
   const pieces = [
     `## ${date ? `${date.kst} (KST)` : '날짜 미확인'}`,
@@ -108,6 +140,10 @@ export function exportCaptureMarkdown(capture) {
   if (capture.reason != null) parts.push(`중단·진행 사유: ${inline(capture.reason)}`);
   const issues = issueLines(capture.issues);
   if (issues) parts.push(issues);
+  if (Array.isArray(capture.chains) && capture.chains.length) {
+    parts.push('## 연속글 확보 상태', '완료는 해당 상세 화면에서 1번부터 마지막 번호까지 본문을 확보했다는 뜻입니다. 계정의 전체 글 확보나 최초 동시 작성 여부를 뜻하지 않습니다.');
+    parts.push(...capture.chains.map(chain => chainMarkdown(chain, capture.cards)));
+  }
   const ordered = capture.cards.map((card, index) => ({ card, index, date: dateOf(card.timestamp) }))
     .sort((a, b) => {
       if (!a.date) return b.date ? 1 : a.index - b.index;

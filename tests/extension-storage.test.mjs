@@ -95,3 +95,85 @@ test('오류 없는 첫 캡션 뒤 늦게 로딩된 첨부와 더 긴 전문을 
   assert.ok(result.issues.some(issue => /최초 확인/.test(issue.reason)));
   await store.close();
 });
+
+test('연속글 20개 부분과 탐색 위치를 다시 열어도 보존하고 빠진 번호가 있으면 완료로 표시하지 않는다', async () => {
+  const indexedDB = new IDBFactory();
+  const store = new CaptureStore({indexedDB});
+  await store.start('tester', 7, identity.runId);
+  const cards = Array.from({length: 20}, (_, index) => card(`part${index + 1}`));
+  await store.append(page(...cards), identity);
+  const members = cards.map((item, index) => ({part: index + 1, id: item.id}));
+  const chain = {rootId: cards[0].id, total: 20, status: 'complete', members: members.slice(0, 19), missing: [], reason: null, updatedAt: '2026-09-19T01:00:00Z'};
+  await store.recordChain(chain, identity);
+  assert.equal((await store.getChains())[0].status, 'incomplete');
+  assert.deepEqual((await store.getChains())[0].missing, [20]);
+  chain.members = members;
+  await store.recordChain(chain, identity);
+  const navigation = {mode: 'detail', profilePath: '/@tester', activeChain: chain, resume: {scrollTop: 1234}, visitedRoots: []};
+  await store.checkpoint(navigation, identity);
+  await store.close();
+  const reopened = new CaptureStore({indexedDB});
+  const status = await reopened.status();
+  assert.equal(status.capture.chainCount, 1);
+  assert.equal(status.capture.completedChainCount, 1);
+  assert.equal(status.capture.incompleteChainCount, 0);
+  assert.equal(status.navigation.resume.scrollTop, 1234);
+  assert.equal((await reopened.exportCapture()).chains[0].members.length, 20);
+  assert.equal((await reopened.getControl()).startedAt > 0, true);
+  await reopened.close();
+});
+
+test('기존 DB version 1의 카드·본문·실행 정보를 지우지 않고 chains 저장소를 추가한다', async () => {
+  const indexedDB = new IDBFactory();
+  const db = await new Promise((resolve, reject) => {
+    const opening = indexedDB.open('threads-text-archive-v2', 1);
+    opening.onupgradeneeded = () => {
+      const db = opening.result;
+      db.createObjectStore('captures', {keyPath: 'account'}); db.createObjectStore('control');
+      db.createObjectStore('cards', {keyPath: ['account', 'id']}).createIndex('account', 'account');
+      db.createObjectStore('issues', {keyPath: ['account', 'key']}).createIndex('account', 'account');
+    };
+    opening.onsuccess = () => resolve(opening.result); opening.onerror = () => reject(opening.error);
+  });
+  const tx = db.transaction(['captures', 'cards', 'control'], 'readwrite');
+  tx.objectStore('captures').put({account: 'tester', version: 2, cardCount: 1, status: '중단', snapshots: 1, duplicateCount: 0});
+  tx.objectStore('cards').put({account: 'tester', id: '/@tester/post/old', card: card('old', '기존에 저장한 전문'), order: 1});
+  tx.objectStore('control').put({account: 'tester', tabId: 7, runId: 'old-run', running: false}, 'active');
+  await new Promise((resolve, reject) => {tx.oncomplete = resolve; tx.onabort = () => reject(tx.error);});
+  db.close();
+  const store = new CaptureStore({indexedDB});
+  assert.equal((await store.exportCapture()).cards[0].text, '기존에 저장한 전문');
+  assert.deepEqual(await store.getChains(), []);
+  assert.equal((await store.status()).capture.chainCount, 0);
+  await store.start('tester', 7, identity.runId);
+  await store.recordChain({rootId: '/@tester/post/old', total: 1, status: 'complete', members: [{part: 1, id: '/@tester/post/old'}], missing: [], reason: null}, identity);
+  assert.equal((await store.status()).capture.completedChainCount, 1);
+  assert.equal((await store.exportCapture()).cards.length, 1);
+  await store.close();
+});
+
+test('서로 다른 연속글 20개를 분리 보존하고 번호 충돌이 있으면 완료를 거부한다', async () => {
+  const store = new CaptureStore({indexedDB: new IDBFactory()});
+  await store.start('tester', 7, identity.runId);
+  for (let index = 1; index <= 20; index++) {
+    const item = card(`root${index}`);
+    await store.append(page(item), identity);
+    await store.recordChain({rootId: item.id, total: 1, status: 'complete', members: [{part: 1, id: item.id}], missing: [], reason: null,
+      conflicts: index === 20 ? [{part: 1, ids: [item.id, '/@tester/post/other']}] : []}, identity);
+  }
+  const status = await store.status();
+  assert.equal(status.capture.chainCount, 20);
+  assert.equal(status.capture.completedChainCount, 19);
+  assert.equal(status.capture.incompleteChainCount, 1);
+  assert.equal((await store.exportCapture()).chains.length, 20);
+  assert.equal((await store.getChains()).find(chain => chain.rootId.endsWith('/root20')).status, 'incomplete');
+  await store.close();
+});
+
+test('다른 계정의 상세글을 복구 위치로 저장하지 않고 기존 위치를 보존한다', async () => {
+  const store = new CaptureStore({indexedDB: new IDBFactory()});
+  await store.start('tester', 7, identity.runId);
+  await assert.rejects(store.checkpoint({mode: 'detail', profilePath: '/@tester', activeChain: {rootId: '/@other/post/one'}}, identity));
+  assert.equal((await store.status()).navigation.mode, 'profile');
+  await store.close();
+});

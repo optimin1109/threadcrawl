@@ -4,16 +4,21 @@ const request = value => new Promise((resolve, reject) => {
   value.onsuccess = () => resolve(value.result);
   value.onerror = () => reject(value.error);
 });
+const storeNames = ['captures', 'cards', 'issues', 'control', 'chains'];
+const matches = (control, identity) => control?.running && identity.tabId === control.tabId && identity.runId === control.runId;
+const initialNavigation = account => ({mode: 'profile', profilePath: `/@${account}`, activeChain: null, resume: null, visitedRoots: []});
 export class CaptureStore {
   constructor({indexedDB = globalThis.indexedDB, name = 'threads-text-archive-v2'} = {}) {
     this.database = new Promise((resolve, reject) => {
-      const opening = indexedDB.open(name, 1);
+      const opening = indexedDB.open(name, 2);
       opening.onupgradeneeded = () => {
         const db = opening.result;
-        db.createObjectStore('captures', {keyPath: 'account'});
-        db.createObjectStore('control');
-        db.createObjectStore('cards', {keyPath: ['account', 'id']}).createIndex('account', 'account');
-        db.createObjectStore('issues', {keyPath: ['account', 'key']}).createIndex('account', 'account');
+        if (!db.objectStoreNames.contains('captures')) db.createObjectStore('captures', {keyPath: 'account'});
+        if (!db.objectStoreNames.contains('control')) db.createObjectStore('control');
+        for (const name of ['cards', 'issues', 'chains']) {
+          if (!db.objectStoreNames.contains(name))
+            db.createObjectStore(name, {keyPath: ['account', name === 'issues' ? 'key' : name === 'chains' ? 'rootId' : 'id']}).createIndex('account', 'account');
+        }
       };
       opening.onsuccess = () => resolve(opening.result);
       opening.onerror = () => reject(opening.error);
@@ -21,14 +26,14 @@ export class CaptureStore {
   }
   async transaction(mode, work) {
     const db = await this.database;
-    const tx = db.transaction(['captures', 'cards', 'issues', 'control'], mode);
+    const tx = db.transaction(storeNames, mode);
     const done = new Promise((resolve, reject) => {
       tx.oncomplete = resolve;
       tx.onabort = () => reject(tx.error ?? new Error('저장 트랜잭션이 중단되었습니다.'));
       tx.onerror = () => {};
     });
     done.catch(() => {});
-    const stores = Object.fromEntries(['captures', 'cards', 'issues', 'control'].map(name => [name, tx.objectStore(name)]));
+    const stores = Object.fromEntries(storeNames.map(name => [name, tx.objectStore(name)]));
     try {
       const result = await work(stores);
       await done;
@@ -39,20 +44,80 @@ export class CaptureStore {
       throw error;
     }
   }
-  async start(account, tabId, runId) {
+  async start(account, tabId, runId, options = {}) {
     return this.transaction('readwrite', async stores => {
       let meta = await request(stores.captures.get(account));
       if (!meta) {
         const {cards, issues, ...initial} = newCapture(account, crypto.randomUUID());
         meta = {...initial, cardCount: 0, issueCount: 0, oldestTimestamp: null, newestTimestamp: null};
       }
+      meta.chainCount ??= 0; meta.completedChainCount ??= 0; meta.incompleteChainCount ??= 0;
       meta.status = '진행 중'; meta.reason = null;
       stores.captures.put(meta);
-      stores.control.put({account, tabId, runId, running: true}, 'active');
+      stores.control.put({account, tabId, runId, running: true, startedAt: options.startedAt ?? Date.now(),
+        recoveryAttempts: options.recoveryAttempts ?? 0,
+        navigation: structuredClone(options.navigation ?? initialNavigation(account))}, 'active');
       return {ok: true};
     });
   }
   async getControl() { return this.transaction('readonly', stores => request(stores.control.get('active'))); }
+  async checkpoint(navigation, identity) {
+    return this.transaction('readwrite', async stores => {
+      const control = await request(stores.control.get('active'));
+      if (!matches(control, identity)) return {ok: false};
+      if (!navigation || !['profile', 'opening', 'detail', 'returning'].includes(navigation.mode) || navigation.profilePath !== `/@${control.account}`)
+        throw new Error('현재 계정의 탐색 위치가 아닙니다.');
+      if (navigation.activeChain != null && (typeof navigation.activeChain.rootId !== 'string' ||
+          !navigation.activeChain.rootId.startsWith(`/@${control.account}/post/`) || !/^\/@[a-z0-9_.]+\/post\/[A-Za-z0-9_-]+$/i.test(navigation.activeChain.rootId)))
+        throw new Error('현재 계정의 연속글 상세 위치가 아닙니다.');
+      control.navigation = structuredClone(navigation);
+      stores.control.put(control, 'active');
+      return {ok: true};
+    });
+  }
+  async recordChain(chain, identity) {
+    return this.transaction('readwrite', async stores => {
+      const control = await request(stores.control.get('active'));
+      if (!matches(control, identity)) return {ok: false};
+      const validId = id => typeof id === 'string' && id.startsWith(`/@${control.account}/post/`) && /^\/@[a-z0-9_.]+\/post\/[A-Za-z0-9_-]+$/i.test(id);
+      if (!validId(chain?.rootId) || !Number.isInteger(chain.total) || chain.total < 1 || chain.total > 10000 ||
+          !['pending', 'complete', 'incomplete'].includes(chain.status) || !Array.isArray(chain.members)) throw new Error('연속글 확인 기록 형식이 잘못되었습니다.');
+      const previous = await request(stores.chains.get([control.account, chain.rootId]));
+      const members = new Map((previous?.chain.members ?? []).map(member => [member.part, member.id]));
+      const conflicts = [...new Map([...(previous?.chain.conflicts ?? []), ...(chain.conflicts ?? [])].map(item => [JSON.stringify(item), item])).values()];
+      let conflict = Boolean(previous?.chain.conflictDetected) || (previous && previous.chain.total !== chain.total) || conflicts.length > 0;
+      for (const member of chain.members) {
+        if (!Number.isInteger(member.part) || member.part < 1 || member.part > chain.total || !validId(member.id)) throw new Error('연속글 번호 또는 게시물 식별자가 잘못되었습니다.');
+        if (members.has(member.part) && members.get(member.part) !== member.id) {
+          conflict = true; conflicts.push({part: member.part, ids: [members.get(member.part), member.id]});
+        }
+        else members.set(member.part, member.id);
+      }
+      const total = Math.max(previous?.chain.total ?? 0, chain.total);
+      const missing = [];
+      for (let part = 1; part <= total; part++) {
+        if (!members.has(part) || !await request(stores.cards.get([control.account, members.get(part)]))) missing.push(part);
+      }
+      if (members.has(1) && members.get(1) !== chain.rootId) conflict = true;
+      if (new Set(members.values()).size !== members.size) conflict = true;
+      const status = conflict || (chain.status === 'complete' && missing.length) ? 'incomplete' : chain.status;
+      const normalized = {...chain, total, status, missing, conflicts, conflictDetected: Boolean(conflict), members: [...members].sort((a, b) => a[0] - b[0]).map(([part, id]) => ({part, id})),
+        reason: conflict ? '연속글 번호·총수·게시물 관계 충돌' : status === 'incomplete' && missing.length ? (chain.reason ?? '번호에 해당하는 저장된 게시물이 없음') : chain.reason ?? null};
+      stores.chains.put({account: control.account, rootId: chain.rootId, chain: normalized});
+      const meta = await request(stores.captures.get(control.account));
+      meta.chainCount = (meta.chainCount ?? 0) + Number(!previous);
+      for (const [field, value] of [['completedChainCount', 'complete'], ['incompleteChainCount', 'incomplete']])
+        meta[field] = (meta[field] ?? 0) + Number(status === value) - Number(previous?.chain.status === value);
+      stores.captures.put(meta);
+      return {ok: true, chain: normalized};
+    });
+  }
+  async getChains() {
+    return this.transaction('readonly', async stores => {
+      const control = await request(stores.control.get('active'));
+      return control ? (await request(stores.chains.index('account').getAll(control.account))).map(row => row.chain) : [];
+    });
+  }
   async finish(status, reason, identity) {
     return this.transaction('readwrite', async stores => {
       const control = await request(stores.control.get('active'));
@@ -67,7 +132,9 @@ export class CaptureStore {
   async status() {
     return this.transaction('readonly', async stores => {
       const control = await request(stores.control.get('active'));
-      return {capture: control ? await request(stores.captures.get(control.account)) : null, running: Boolean(control?.running)};
+      const capture = control ? await request(stores.captures.get(control.account)) : null;
+      return {capture: capture ? {chainCount: 0, completedChainCount: 0, incompleteChainCount: 0, ...capture} : null,
+        running: Boolean(control?.running), navigation: control?.navigation ?? (control ? initialNavigation(control.account) : null)};
     });
   }
   async append(page, identity) {
@@ -96,10 +163,11 @@ export class CaptureStore {
         }
       }
       meta.snapshots++; meta.updatedAt = page.capturedAt;
+      control.recoveryAttempts = 0;
       if (page.blocked) {
         control.running = false; meta.status = '불완전'; meta.reason = '로그인/보안 확인/지원하지 않는 페이지 감지';
-        stores.control.put(control, 'active');
       }
+      stores.control.put(control, 'active');
       stores.captures.put(meta);
       return {ok: control.running};
     });
@@ -111,8 +179,9 @@ export class CaptureStore {
       const meta = await request(stores.captures.get(control.account));
       const rows = await request(stores.cards.index('account').getAll(control.account));
       const issues = await request(stores.issues.index('account').getAll(control.account));
+      const chains = await request(stores.chains.index('account').getAll(control.account));
       const {cardCount, issueCount, oldestTimestamp, newestTimestamp, ...capture} = meta;
-      return {...capture, cards: rows.sort((a, b) => a.order - b.order).map(row => row.card), issues: issues.map(row => row.issue)};
+      return {...capture, cards: rows.sort((a, b) => a.order - b.order).map(row => row.card), issues: issues.map(row => row.issue), chains: chains.map(row => row.chain)};
     });
   }
   async close() { (await this.database).close(); }
