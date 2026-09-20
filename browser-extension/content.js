@@ -5,6 +5,7 @@
   const {runId,maxRounds=1800,intervalMs=1500}=config;
   if(!runId)return;
   const detailTimeoutMs=Number.isFinite(config.detailTimeoutMs)&&config.detailTimeoutMs>0?config.detailTimeoutMs:120000;
+  const detailNoProgressMs=Number.isFinite(config.detailNoProgressMs)&&config.detailNoProgressMs>0?config.detailNoProgressMs:10000;
   const started=Number.isFinite(config.startedAt)?config.startedAt:Date.now();
   const nav=structuredClone(config.navigation || {mode:'profile',profilePath:location.pathname,activeChain:null,resume:null,visitedRoots:[]});
   const account=nav.profilePath.match(/^\/@([a-z0-9_.]+)\/?$/i)?.[1].toLowerCase();
@@ -127,7 +128,7 @@
       }
       // During same-origin reload, wait for the expected view to render before parsing it.
       if(!threadsArchiveRegion()){
-        if(nav.mode==='detail'&&Date.now()-detailProgressAt>=30000)await returnToProfile(`상세 목록을 확인하지 못함. 빠진 순번: ${nav.activeChain.missing.join(', ')}`);
+        if(nav.mode==='detail'&&Date.now()-detailProgressAt>=detailNoProgressMs)await returnToProfile(`상세 목록을 확인하지 못함. 빠진 순번: ${nav.activeChain.missing.join(', ')}`);
         else if(Date.now()-lastChange>30000)await end('활성 목록 로딩을 확인하지 못함. 저장한 글은 유지됩니다.');
         else schedule(intervalMs);return;
       }
@@ -156,7 +157,7 @@
         }
         if(nav.activeChain.status==='complete'){await returnToProfile();return;}
         if(nav.activeChain.conflicts?.length){await returnToProfile('같은 순번의 게시물이 여러 개여서 연속글 완성을 확정할 수 없음');return;}
-        if(Date.now()-detailProgressAt>=30000){await returnToProfile(`추가 본문을 확인하지 못함. 빠진 순번: ${nav.activeChain.missing.join(', ')}`);return;}
+        if(Date.now()-detailProgressAt>=detailNoProgressMs){await returnToProfile(`추가 본문을 확인하지 못함. 빠진 순번: ${nav.activeChain.missing.join(', ')}`);return;}
         if(dirty){schedule(75);return;}
         if(!await canAct(path))return;
         if(Date.now()>=nextExpandAt&&expandReplies()){schedule(intervalMs);return;}

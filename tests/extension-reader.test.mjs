@@ -54,6 +54,27 @@ test('observed image and location siblings do not invalidate a fully read captio
   assert.deepEqual(card.attachments,[], 'image bytes and OCR are outside text capture');
 });
 
+test('a numbered media-only carousel is a verified empty-text part', () => {
+  const dom = new JSDOM(`<main data-column-scrollable role="region"><div data-virtualized>
+    <div data-pressable-container="true">
+      <a href="${id}"><time datetime="2026-09-19T04:00:00Z"></time></a>
+      <div class="x1rg5ohu"><span>2</span><span>/</span><span>2</span></div>
+      <div class="x1xdureb xkbb5z x13vxnyz"><div>
+        <div><a href="${id}/media"><img alt="첫 사진"></a><a href="${id}/media"><img alt="둘째 사진"></a><a href="${id}/media"><img alt="셋째 사진"></a></div>
+        <div><button>좋아요</button></div>
+      </div></div>
+    </div>
+  </div></main>`, {url:'https://www.threads.com/@sample', runScripts:'outside-only'});
+  dom.window.eval(source);
+  const card = JSON.parse(JSON.stringify(dom.window.readThreadsPage())).cards[0];
+  dom.window.close();
+  assert.equal(card.label, '2/2');
+  assert.equal(card.text, '');
+  assert.deepEqual(card.issues, []);
+  assert.deepEqual(card.notes, [{type:'image', url:`https://www.threads.com${id}/media`}]);
+  assert.deepEqual(card.attachments, []);
+});
+
 test('an image must not mask unrecognized text, another post, or a truncated long attachment', () => {
   for(const extra of [
     `<div><a href="${id}/media"><img><span dir="auto">아직 읽지 않은 글</span></a></div>`,

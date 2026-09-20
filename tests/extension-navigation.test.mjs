@@ -8,7 +8,7 @@ const source = name => readFileSync(file(name),'utf8');
 const flush=async()=>{for(let i=0;i<40;i++)await Promise.resolve();};
 function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,redirectOnCheckpoint=null,
   mutateDetailSnapshots=false,missingRegionA=false,expandUnrelatedReplies=false,profileCompleteA=false,
-  imageInProfileA=false,progressiveDetailA=false,detailTimeoutMs=120000,
+  imageInProfileA=false,mediaOnlySecondA=false,progressiveDetailA=false,detailTimeoutMs=120000,
   downgradeProfileCompleteA=false,downgradeDetailCompleteA=false}={}) {
   const badge=(part,n)=>`<div class="x1rg5ohu"><span>${part}</span><span>/</span><span>${n}</span></div>`;
   const row=(prefix,part,n,detail=false,owner='sample')=>`<div data-pressable-container="true"><a href="/@${owner}/post/${prefix}${part}"><time datetime="2026-09-19T04:00:00Z"></time></a>${detail?badge(part,n):''}<div class="${detail?'xqti54a x49hn82 xcrlgei x889kno':'x1xdureb xkbb5z'} x13vxnyz"><div><div class="x1a6qonq"><div><span dir="auto">${prefix} ${part} 본문${detail?'':badge(part,n)}</span></div></div><div><button>좋아요</button></div></div></div></div>`;
@@ -16,7 +16,12 @@ function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,
   const profile=()=>{
     let first=row('A',1,total);
     if(imageInProfileA)first=first.replace('<div><button>', '<div><a href="/@sample/post/A1/media"><img alt="사진"></a></div><div><a href="/search?location_id=123&amp;serp_type=location_tag">장소</a></div><div><button>');
-    return region((profileCompleteA?'<div data-virtualized="true">':'')+first+row('A',2,total)
+    let second=row('A',2,total);
+    if(mediaOnlySecondA)second=second
+      .replace('</a><div class="x1xdureb',`</a>${badge(2,total)}<div class="x1xdureb`)
+      .replace(`<div class="x1a6qonq"><div><span dir="auto">A 2 본문${badge(2,total)}</span></div></div>`,
+        `<div><a href="/@sample/post/A2/media"><img alt="첫 사진"></a><a href="/@sample/post/A2/media"><img alt="둘째 사진"></a></div>`);
+    return region((profileCompleteA?'<div data-virtualized="true">':'')+first+second
       +(profileCompleteA?'</div>':'')+row('B',1,3)+row('B',2,3));
   };
   const dom=new JSDOM(profile(),{url:'https://www.threads.com/@sample',runScripts:'outside-only',pretendToBeVisual:true});
@@ -92,7 +97,7 @@ function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,
     w.threadsArchiveConfig={...w.threadsArchiveConfig,runId:'reloaded-run',navigation:structuredClone(navigation)};
     w.eval(source('content.js'));
   };
-  return {dom,w,messages,events,restoredPositions,expansionTimes,advance,release,reload,stop:()=>{w.threadsArchiveStop();dom.window.close();}};
+  return {dom,w,messages,events,restoredPositions,expansionTimes,advance,release,reload,now:()=>now,stop:()=>{w.threadsArchiveStop();dom.window.close();}};
 }
 function assertAckedIncompleteReturn(h) {
   const back=h.events.indexOf('back');
@@ -145,7 +150,7 @@ for(const mode of ['opening','returning'])test(`does not click a stale control a
   h.stop();
 });
 
-test('detail snapshots that mutate during every save still retain progress and return after 30 seconds without a new part',async()=>{
+test('detail snapshots that mutate during every save still retain progress and return after 10 seconds without a new part',async()=>{
   const h=harness({total:2,missing:2,mutateDetailSnapshots:true});
   try{
     await h.advance(450);
@@ -155,6 +160,18 @@ test('detail snapshots that mutate during every save still retain progress and r
     assertAckedIncompleteReturn(h);
     assert.equal(reports.at(-1).chain.status,'incomplete');
     assert.deepEqual(reports.at(-1).chain.missing,[2]);
+  }finally{h.stop();}
+});
+
+test('a quiet incomplete detail returns after about 10 seconds of no numbered progress',async()=>{
+  const h=harness({total:2,missing:2});
+  try{
+    await h.advance(7);
+    assert.ok(!h.events.includes('back'),'do not abandon a detail before its short loading allowance');
+    await h.advance(3);
+    assert.ok(h.events.includes('back'),'an incomplete detail should not wait for the old 30-second timeout');
+    assert.ok(h.now()-1000<20000);
+    assertAckedIncompleteReturn(h);
   }finally{h.stop();}
 });
 
@@ -196,8 +213,8 @@ test('reply expansion is rate limited and cannot postpone the no-progress return
   }finally{h.stop();}
 });
 
-test('a fully verified profile 2/2 group with an image is saved without opening it, then another root is visited',async()=>{
-  const h=harness({total:2,profileCompleteA:true,imageInProfileA:true});
+test('a profile 2/2 group ending in a media-only part is saved without opening it, then another root is visited',async()=>{
+  const h=harness({total:2,profileCompleteA:true,imageInProfileA:true,mediaOnlySecondA:true});
   try{
     await h.advance(15);
     const report=h.messages.find(m=>m.type==='chain'&&m.chain.rootId==='/@sample/post/A1'&&m.chain.status==='complete');
@@ -207,6 +224,10 @@ test('a fully verified profile 2/2 group with an image is saved without opening 
     const root=h.messages.find(message=>message.type==='snapshot').page.cards[0];
     assert.deepEqual(root.issues,[]);
     assert.deepEqual(root.notes.map(note=>note.type),['image','location']);
+    const second=h.messages.find(message=>message.type==='snapshot').page.cards.find(card=>card.id==='/@sample/post/A2');
+    assert.equal(second.text,'');
+    assert.deepEqual(second.issues,[]);
+    assert.deepEqual(second.notes.map(note=>note.type),['image']);
     assert.ok(!h.events.includes('open:A'));
     assert.ok(h.events.includes('open:B'));
   }finally{h.stop();}

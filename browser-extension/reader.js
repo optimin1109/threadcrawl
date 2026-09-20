@@ -64,17 +64,20 @@ function readThreadsPage(options={}) {
     if (times.length !== 1 || row.querySelector('[data-pressable-container="true"]')) { fail('인용/중첩 게시물 본문 분리 미검증'); continue; }
     const bodies = row.querySelectorAll('.x1xdureb.xkbb5z.x13vxnyz, .x1xdureb.xqti54a.x13vxnyz' + (detail && id===options.detailRoot ? ', .xqti54a.x13vxnyz.x49hn82.xcrlgei.x889kno' : ''));
     if (bodies.length !== 1) { fail('확인된 본문 컨테이너를 찾지 못함'); continue; }
-    const body = bodies[0].firstElementChild?.firstElementChild;
-    if (!body || !body.classList.contains('x1a6qonq')) { fail('본문 구조 변경 또는 미디어/첨부 전용 구조 미검증'); continue; }
-    const paragraphs = [...body.children];
-    const texts = [];
     const badges=[...row.querySelectorAll('.x1rg5ohu')].filter(x=>x.closest('[data-pressable-container="true"]')===row && /^\d+\/\d+$/.test(x.textContent.replace(/\s/g,'')));
     if(badges.length===1) {
       const tokens=[...badges[0].querySelectorAll('span')].map(s=>s.textContent.trim());
       if(tokens.length===3 && tokens[1]==='/') card.label=badges[0].textContent.replace(/\s/g,'');
       else fail('서비스 순번 표식 구조 미검증');
     } else if(badges.length>1) fail('서로 다른 순번 표식이 한 게시물에 있음');
-    for (const p of paragraphs) {
+    const content=bodies[0].firstElementChild;
+    if(!content){fail('본문 구조 변경 또는 미디어/첨부 전용 구조 미검증');continue;}
+    const siblings=[...content.children];
+    const toolbar=siblings.at(-1);
+    if (siblings.length<2 || !toolbar?.querySelector('[role="button"],button')) fail('본문 뒤 도구 모음 구조 미검증');
+    const body=siblings[0], hasCaption=body?.classList.contains('x1a6qonq');
+    const texts=[];
+    if(hasCaption) for (const p of body.children) {
       const span = p.firstElementChild;
       if (p.tagName !== 'DIV' || span?.tagName !== 'SPAN' || span.getAttribute('dir') !== 'auto' || p.children.length !== 1) { fail('본문 단락/긴 첨부/펼치기 구조 미검증'); continue; }
       const badge = [...span.children].find(x=>x.tagName==='DIV' && x.classList.contains('x1rg5ohu'));
@@ -88,11 +91,10 @@ function readThreadsPage(options={}) {
       texts.push(textOf(span,badge).replace(badge ? /\u00a0$/ : /$^/,'').replace(/\r\n?/g,'\n'));
     }
     card.text=texts.join('\n');
-    // The attachment is a separate sibling of the caption, not part of its paragraphs.
-    const siblings=[...bodies[0].firstElementChild.children];
-    const toolbar=siblings.at(-1);
-    if (siblings.length<2 || !toolbar?.querySelector('[role="button"],button')) fail('본문 뒤 도구 모음 구조 미검증');
-    for (const extra of siblings.slice(1, -1)) {
+    // Attachments are siblings of the optional caption. Numbered media-only
+    // posts are valid empty-text parts when every visible image links back to
+    // that same post's media surface.
+    for (const extra of siblings.slice(hasCaption ? 1 : 0, -1)) {
       const links=[...extra.querySelectorAll('a[href]')];
       const link=links.length===1 ? links[0] : null;
       const href=link?.getAttribute('href');
@@ -102,9 +104,14 @@ function readThreadsPage(options={}) {
       const validHref=href===`${id}/media` || href===`https://www.threads.com${id}/media`;
       // Observed photo + location siblings are not missing text. Keep their
       // presence separately without downloading media or treating alt text as OCR.
-      if(validHref && link.querySelector('img') && !extra.textContent.trim() &&
+      const imageLinks=links.length>0 && links.every(item=>{
+        const itemHref=item.getAttribute('href');
+        return (itemHref===`${id}/media` || itemHref===`https://www.threads.com${id}/media`) && item.querySelector('img');
+      });
+      if(imageLinks && !extra.textContent.trim() &&
           !extra.querySelector('video,button,[role="button"],time')) {
-        (card.notes ??= []).push({type:'image',url:`https://www.threads.com${id}/media`});
+        if(!(card.notes || []).some(note=>note.type==='image'))
+          (card.notes ??= []).push({type:'image',url:`https://www.threads.com${id}/media`});
         continue;
       }
       if(href?.startsWith('/search?') && !extra.querySelector('img,video,button,[role="button"],time')) {
@@ -125,6 +132,7 @@ function readThreadsPage(options={}) {
       if (!text.trim()) { fail('긴 첨부 본문이 비어 있음'); continue; }
       card.attachments.push({type:'long-text',url:`https://www.threads.com${id}/media`,text,source:'profile-dom'});
     }
+    if(!hasCaption && !(card.notes || []).some(note=>note.type==='image')) fail('본문 구조 변경 또는 미디어/첨부 전용 구조 미검증');
   }
   result.virtualizedPlaceholders = region.querySelectorAll('[data-virtualized="true"]').length;
   if (!result.cards.length && !result.issues.length) issue(null,'읽을 수 있는 게시물 없음: 빈 계정 또는 접근/로딩 상태 미확인');
