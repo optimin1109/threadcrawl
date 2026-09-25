@@ -9,26 +9,29 @@ const flush=async()=>{for(let i=0;i<40;i++)await Promise.resolve();};
 function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,redirectOnCheckpoint=null,
   mutateDetailSnapshots=false,missingRegionA=false,expandUnrelatedReplies=false,profileCompleteA=false,
   imageInProfileA=false,mediaOnlySecondA=false,progressiveDetailA=false,detailTimeoutMs=120000,
+  delayedProfileSecondA=false,removeProfileRootA=false,photoButtonsInProfileA=false,mutateProfileCompleteA=false,lateProfileRootA=false,
   downgradeProfileCompleteA=false,downgradeDetailCompleteA=false}={}) {
   const badge=(part,n)=>`<div class="x1rg5ohu"><span>${part}</span><span>/</span><span>${n}</span></div>`;
   const row=(prefix,part,n,detail=false,owner='sample')=>`<div data-pressable-container="true"><a href="/@${owner}/post/${prefix}${part}"><time datetime="2026-09-19T04:00:00Z"></time></a>${detail?badge(part,n):''}<div class="${detail?'xqti54a x49hn82 xcrlgei x889kno':'x1xdureb xkbb5z'} x13vxnyz"><div><div class="x1a6qonq"><div><span dir="auto">${prefix} ${part} 본문${detail?'':badge(part,n)}</span></div></div><div><button>좋아요</button></div></div></div></div>`;
   const region=html=>`<main data-column-scrollable role="region">${html}</main>`;
   const profile=()=>{
+    if(lateProfileRootA)return region('');
     let first=row('A',1,total);
     if(imageInProfileA)first=first.replace('<div><button>', '<div><a href="/@sample/post/A1/media"><img alt="사진"></a></div><div><a href="/search?location_id=123&amp;serp_type=location_tag">장소</a></div><div><button>');
+    if(photoButtonsInProfileA)first=first.replace('<div><button>', '<div><div role="button" tabindex="0"><picture><img alt=""></picture></div><button aria-label="미디어를 파노라마로 결합" type="button"></button><div role="button" tabindex="0"><picture><img alt=""></picture></div></div><div><button>');
     let second=row('A',2,total);
     if(mediaOnlySecondA)second=second
       .replace('</a><div class="x1xdureb',`</a>${badge(2,total)}<div class="x1xdureb`)
       .replace(`<div class="x1a6qonq"><div><span dir="auto">A 2 본문${badge(2,total)}</span></div></div>`,
         `<div><a href="/@sample/post/A2/media"><img alt="첫 사진"></a><a href="/@sample/post/A2/media"><img alt="둘째 사진"></a></div>`);
-    return region((profileCompleteA?'<div data-virtualized="true">':'')+first+second
+    return region((profileCompleteA?'<div data-virtualized="true">':'')+first+(delayedProfileSecondA?'':second)
       +(profileCompleteA?'</div>':'')+row('B',1,3)+row('B',2,3));
   };
   const dom=new JSDOM(profile(),{url:'https://www.threads.com/@sample',runScripts:'outside-only',pretendToBeVisual:true});
   const w=dom.window,messages=[],events=[],timers=new Map();
   w.structuredClone=structuredClone;
   let now=1000,nextId=0,top=400,layoutShift=0,detailSnapshotCount=0,visibleParts=1,release;
-  const restoredPositions=[],expansionTimes=[];
+  const restoredPositions=[],expansionTimes=[],profileScrollTimes=[],detailOpenTimes=[];
   const pending=new Promise(r=>release=r);
   w.Date.now=()=>now;
   w.setTimeout=(fn,delay=0)=>{timers.set(++nextId,{fn,at:now+delay});return nextId;};
@@ -38,6 +41,19 @@ function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,
   Object.defineProperties(scroller,{scrollTop:{get:()=>top,set:value=>{top=value;}},clientHeight:{value:600},scrollHeight:{value:4000}});
   scroller.scrollBy=({top:delta})=>{
     top+=delta;events.push('scroll');
+    if(w.location.pathname==='/@sample'){
+      profileScrollTimes.push(now);
+      if(lateProfileRootA&&profileScrollTimes.length===1)
+        w.setTimeout(()=>w.document.querySelector('main').insertAdjacentHTML('beforeend',`<div data-virtualized="true">${row('A',1,total)}</div>`),75);
+      if(lateProfileRootA&&profileScrollTimes.length===2)
+        w.setTimeout(()=>w.document.body.appendChild(w.document.createElement('div')),100);
+    }
+    if(w.location.pathname==='/@sample'&&delayedProfileSecondA&&!w.document.querySelector('a[href="/@sample/post/A2"]')) {
+      const group=w.document.querySelector('[data-virtualized]');
+      if(group)group.insertAdjacentHTML('beforeend',row('A',2,total));
+    }
+    if(w.location.pathname==='/@sample'&&removeProfileRootA)
+      w.document.querySelector('a[href="/@sample/post/A1"]')?.closest('[data-pressable-container]')?.remove();
     if(progressiveDetailA&&w.location.pathname==='/@sample/post/A1'&&visibleParts<total)
       w.document.querySelector('main').insertAdjacentHTML('beforeend',row('A',++visibleParts,total));
   };
@@ -50,6 +66,7 @@ function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,
     const anchor=event.target.closest('a');
     if(anchor?.querySelector('time')) {
       event.preventDefault();const id=anchor.getAttribute('href');const prefix=id.includes('/A')?'A':'B',n=prefix==='A'?total:3;
+      detailOpenTimes.push({prefix,at:now});
       events.push(`open:${prefix}`);top=0;w.history.replaceState({},'',id);
       w.document.body.innerHTML='<button aria-label="돌아가기">돌아가기</button>'+(prefix==='A'&&missingRegionA?'<p>목록 로딩 중</p>':region(Array.from({length:n},(_,i)=>i+1).filter(i=>!(prefix==='A'&&i===missing)&&!(prefix==='A'&&progressiveDetailA&&i>1)).map(i=>row(prefix,i,n,i===1)).join('')+row('X',3,n,false,'outsider')+(prefix==='A'&&expandUnrelatedReplies?'<button id="more-replies">답글 1000개 더 보기</button>':'')));
     } else if(event.target.closest('button[aria-label="돌아가기"]')) {
@@ -78,6 +95,9 @@ function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,
     const response=message.type==='snapshot' && holdSnapshot ? pending : Promise.resolve(result);
     return response.then(value=>{
       events.push(`ack:${message.type}${message.type==='chain'?`:${value.chain?.status || message.chain.status}`:''}`);
+      if(mutateProfileCompleteA&&message.type==='chain'&&value.chain?.rootId==='/@sample/post/A1'&&
+          value.chain.status==='complete'&&w.location.pathname==='/@sample')
+        w.document.body.appendChild(w.document.createElement('div'));
       return value;
     });
   },onMessage:{addListener(){},removeListener(){}}}};
@@ -97,7 +117,7 @@ function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,
     w.threadsArchiveConfig={...w.threadsArchiveConfig,runId:'reloaded-run',navigation:structuredClone(navigation)};
     w.eval(source('content.js'));
   };
-  return {dom,w,messages,events,restoredPositions,expansionTimes,advance,release,reload,now:()=>now,stop:()=>{w.threadsArchiveStop();dom.window.close();}};
+  return {dom,w,messages,events,restoredPositions,expansionTimes,profileScrollTimes,detailOpenTimes,advance,release,reload,now:()=>now,stop:()=>{w.threadsArchiveStop();dom.window.close();}};
 }
 function assertAckedIncompleteReturn(h) {
   const back=h.events.indexOf('back');
@@ -115,7 +135,7 @@ test('opens each profile chain, saves twelve parts, returns, and continues to an
   assert.ok(h.events.indexOf('snapshot')<h.events.indexOf('open:A'));
   assert.ok(h.events.indexOf('checkpoint')<h.events.indexOf('open:A'));
   assert.ok(h.events.indexOf('back')<h.events.indexOf('open:B'));
-  assert.deepEqual(h.restoredPositions,[600,800], 'restore the anchor offset even when layout changes after returning');
+  assert.deepEqual(h.restoredPositions,[990,1190], 'restore the anchor offset after the 390px profile look-ahead and 200px return layout shifts');
   assert.equal(h.w.location.pathname,'/@sample');
   h.stop();
 });
@@ -128,6 +148,79 @@ test('a missing middle part becomes an explicit incomplete chain, never complete
   assert.ok(!reports.some(m=>m.chain.status==='complete'));
   assert.ok(h.events.includes('open:B'));
   h.stop();
+});
+
+test('scrolls the profile once to reveal its delayed 2/2 before deciding to open detail',async()=>{
+  const h=harness({total:2,profileCompleteA:true,delayedProfileSecondA:true});
+  try{
+    await h.advance(20);
+    const report=h.messages.find(m=>m.type==='chain'&&m.chain.rootId==='/@sample/post/A1'&&m.chain.status==='complete');
+    assert.ok(report,'both parts revealed in the same profile group must be saved');
+    assert.equal(report.chain.completedFrom,'profile');
+    assert.deepEqual(report.chain.members.map(m=>m.part),[1,2]);
+    assert.ok(!h.events.includes('open:A'),'do not leave the profile before its visible continuation renders');
+    assert.ok(h.events.includes('open:B'),'genuinely missing parts still get a bounded detail visit');
+  }finally{h.stop();}
+});
+
+test('records an unresolved root that unmounts during profile look-ahead and continues',async()=>{
+  const h=harness({total:2,removeProfileRootA:true});
+  try{
+    await h.advance(20);
+    const report=h.messages.filter(m=>m.type==='chain'&&m.chain.rootId==='/@sample/post/A1').at(-1);
+    assert.ok(report,'do not silently lose the pending root when virtualization removes it');
+    assert.equal(report.chain.status,'incomplete');
+    assert.ok(report.chain.missing.length);
+    assert.ok(!h.events.includes('open:A'));
+    assert.ok(h.events.includes('open:B'));
+  }finally{h.stop();}
+});
+
+test('persists a newly pending root before its first profile look-ahead scroll',async()=>{
+  const h=harness({total:2});
+  try{
+    await flush();
+    const report=h.messages.find(m=>m.type==='chain'&&m.chain.rootId==='/@sample/post/A1');
+    assert.ok(report,'stopping after the look-ahead scroll must retain the unresolved chain metadata');
+    assert.ok(report.chain.missing.includes(2));
+    const acknowledged=h.events.indexOf('ack:chain:pending'),scrolled=h.events.indexOf('scroll');
+    assert.ok(acknowledged>=0&&scrolled>acknowledged,'persist the pending chain before advancing the profile');
+  }finally{h.stop();}
+});
+
+test('a newly mounted root receives a full render interval after its actual profile look-ahead scroll',async()=>{
+  const h=harness({total:2,lateProfileRootA:true});
+  try{
+    await h.advance(15);
+    const opening=h.detailOpenTimes.find(item=>item.prefix==='A');
+    assert.ok(opening,'an unresolved root still receives a bounded detail visit');
+    assert.ok(h.profileScrollTimes.length>=2);
+    assert.ok(opening.at-h.profileScrollTimes[1]>=1500,'do not consume the render allowance while waiting for the look-ahead scroll');
+  }finally{h.stop();}
+});
+
+test('a profile completion acknowledged during a DOM mutation clears its pending detail visit',async()=>{
+  const h=harness({total:2,profileCompleteA:true,delayedProfileSecondA:true,mutateProfileCompleteA:true});
+  try{
+    await h.advance(20);
+    const report=h.messages.find(m=>m.type==='chain'&&m.chain.rootId==='/@sample/post/A1'&&m.chain.status==='complete');
+    assert.equal(report?.chain.completedFrom,'profile');
+    assert.ok(!h.events.includes('open:A'),'acknowledged profile completion must cancel the pending detail visit even if the DOM changed during save');
+    assert.ok(h.events.includes('open:B'));
+  }finally{h.stop();}
+});
+
+test('a profile group with photo buttons saves both parts and continues without entering its detail',async()=>{
+  const h=harness({total:2,profileCompleteA:true,photoButtonsInProfileA:true});
+  try{
+    await h.advance(20);
+    const report=h.messages.find(m=>m.type==='chain'&&m.chain.rootId==='/@sample/post/A1'&&m.chain.status==='complete');
+    assert.ok(report);
+    assert.equal(report.chain.completedFrom,'profile');
+    assert.deepEqual(report.chain.members.map(m=>m.part),[1,2]);
+    assert.ok(!h.events.includes('open:A'));
+    assert.ok(h.events.includes('open:B'));
+  }finally{h.stop();}
 });
 test('does not open a detail page before the profile snapshot is committed',async()=>{
   const h=harness({holdSnapshot:true});await flush();
@@ -251,7 +344,7 @@ test('reinjecting from a detail checkpoint preserves the original per-detail dea
   try{
     await h.advance(2);
     const before=h.messages.filter(message=>message.type==='checkpoint'&&message.navigation.mode==='detail').at(-1).navigation.detailStartedAt;
-    assert.equal(before,1000);
+    assert.equal(before,2500,'the profile look-ahead occurs before the detail deadline starts');
     h.reload();await h.advance(3);
     const report=h.messages.filter(message=>message.type==='chain'&&message.chain.rootId==='/@sample/post/A1').at(-1);
     assert.equal(report.chain.status,'incomplete');

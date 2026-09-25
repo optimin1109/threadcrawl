@@ -108,8 +108,20 @@ function readThreadsPage(options={}) {
         const itemHref=item.getAttribute('href');
         return (itemHref===`${id}/media` || itemHref===`https://www.threads.com${id}/media`) && item.querySelector('img');
       });
-      if(imageLinks && !extra.textContent.trim() &&
-          !extra.querySelector('video,button,[role="button"],time')) {
+      // The observed multi-photo layout has photo buttons instead of media
+      // links. Accept its picture-backed controls and empty panorama button only.
+      const photos=[...extra.querySelectorAll('picture > img')];
+      const photoButton=node=>node?.matches('div[role="button"][tabindex="0"]') &&
+        node.querySelectorAll('img').length===1 && node.querySelector('picture > img');
+      const photoButtons=photos.length>1 && extra.querySelectorAll('img').length===photos.length &&
+        !extra.matches('button,[role="button"],a') && !extra.textContent.trim() &&
+        !extra.querySelector('a,video,audio,input,textarea,select,iframe,canvas,object,embed,time,[data-pressable-container]') &&
+        photos.every(photo=>photoButton(photo.closest('[role="button"]')) && extra.contains(photo.closest('[role="button"]'))) &&
+        [...extra.querySelectorAll('button,[role="button"]')].every(control=>photoButton(control) ||
+          (control.tagName==='BUTTON' && control.getAttribute('aria-label')==='미디어를 파노라마로 결합' &&
+            control.childElementCount===0));
+      if(photoButtons || (imageLinks && !extra.textContent.trim() &&
+          !extra.querySelector('video,button,[role="button"],time'))) {
         if(!(card.notes || []).some(note=>note.type==='image'))
           (card.notes ??= []).push({type:'image',url:`https://www.threads.com${id}/media`});
         continue;

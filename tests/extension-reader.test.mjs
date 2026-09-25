@@ -16,6 +16,9 @@ function read(extra = '', caption = '소개글', url = 'https://www.threads.com/
   return page;
 }
 const attachment = (text, path = id) => `<div><a href="${path}/media"><div><div><div><span dir="auto"><span style="-webkit-line-clamp:6"><span>${escape(text)}</span></span></span><span dir="auto">더 보기</span></div></div></div><div role="none"></div></a></div>`;
+const photoButton = '<div role="button" tabindex="0"><div><picture><img alt=""></picture></div></div>';
+const panoramaButton = '<button aria-label="미디어를 파노라마로 결합" type="button"></button>';
+const photoCarousel = `<div><div>${photoButton}</div>${panoramaButton}<div>${photoButton}</div></div>`;
 
 test('keeps the whole long attachment, whitespace and caption independently', () => {
   const long = '첫 문단\n\n' + '긴 글 😀 '.repeat(1500) + '\n 마지막 문장  ';
@@ -73,6 +76,54 @@ test('a numbered media-only carousel is a verified empty-text part', () => {
   assert.deepEqual(card.issues, []);
   assert.deepEqual(card.notes, [{type:'image', url:`https://www.threads.com${id}/media`}]);
   assert.deepEqual(card.attachments, []);
+});
+
+test('observed photo-button carousel preserves a numbered caption without image links', () => {
+  const card = read(photoCarousel, '사진 설명&nbsp;<div class="x1rg5ohu"><span>1</span><span>/</span><span>2</span></div>').cards[0];
+  assert.equal(card.text, '사진 설명');
+  assert.equal(card.label, '1/2');
+  assert.deepEqual(card.issues, []);
+  assert.deepEqual(card.notes, [{type:'image', url:'https://www.threads.com/@sample/post/ABC123/media'}]);
+  assert.deepEqual(card.attachments, []);
+});
+
+test('observed photo-button carousel verifies a media-only 2/2 even with empty image alt text', () => {
+  const dom = new JSDOM(`<main data-column-scrollable role="region"><div data-virtualized>
+    <div data-pressable-container="true">
+      <a href="${id}"><time datetime="2026-09-19T04:00:00Z"></time></a>
+      <div class="x1rg5ohu"><span>2</span><span>/</span><span>2</span></div>
+      <div class="x1xdureb xqti54a x13vxnyz"><div>${photoCarousel}<div><button>좋아요</button></div></div></div>
+    </div>
+  </div></main>`, {url:'https://www.threads.com/@sample', runScripts:'outside-only'});
+  try {
+    dom.window.eval(source);
+    const card = JSON.parse(JSON.stringify(dom.window.readThreadsPage())).cards[0];
+    assert.equal(card.text, '');
+    assert.equal(card.label, '2/2');
+    assert.deepEqual(card.issues, []);
+    assert.deepEqual(card.notes, [{type:'image', url:'https://www.threads.com/@sample/post/ABC123/media'}]);
+    assert.deepEqual(card.attachments, []);
+  } finally { dom.window.close(); }
+});
+
+test('photo buttons never mask unknown controls, text, video, links, or a nested post', () => {
+  for (const extra of [
+    photoCarousel.replace(panoramaButton, '<button aria-label="알 수 없는 동작"><svg></svg></button>'),
+    photoCarousel.replace(panoramaButton, '<div role="button" tabindex="0" aria-label="알 수 없는 동작"></div>'),
+    photoCarousel.replace(panoramaButton, '<button aria-label="미디어를 파노라마로 결합">추가 본문</button>'),
+    photoCarousel.replace(panoramaButton, '<button aria-label="미디어를 파노라마로 결합"><div></div></button>'),
+    photoCarousel.replace(panoramaButton, '<span>읽어야 하는 본문</span>'),
+    photoCarousel.replace(panoramaButton, '<video></video>'),
+    photoCarousel.replace(panoramaButton, '<input type="radio">'),
+    photoCarousel.replace(panoramaButton, '<a href="/@other/post/Other/media"></a>'),
+    photoCarousel.replace(panoramaButton, '<div data-pressable-container="true"></div>'),
+    photoCarousel.replace('tabindex="0"', 'tabindex="-1"'),
+    photoCarousel.replace('<picture><img alt=""></picture>', '<img alt="">'),
+  ]) {
+    const card = read(extra).cards[0];
+    assert.ok(card.issues.length, extra);
+    assert.equal(card.notes?.some(note => note.type === 'image') || false, false, extra);
+  }
 });
 
 test('an image must not mask unrecognized text, another post, or a truncated long attachment', () => {

@@ -11,6 +11,7 @@
   const account=nav.profilePath.match(/^\/@([a-z0-9_.]+)\/?$/i)?.[1].toLowerCase();
   const chains=globalThis.threadsArchiveChains;
   const known=new Map((config.chains || []).map(c=>[c.rootId,c]));
+  const profilePending=new Map();
   nav.visitedRoots ||= [];
   let stopped=false,stopReason=null,busy=false,dirty=false,timer,deadline,scheduledAt=0,observer;
   let previous='',rounds=0,lastChange=Date.now(),nextScrollAt=0,nextExpandAt=0,transitionAt=Date.now(),detailProgressAt=Date.now();
@@ -58,6 +59,7 @@
     return persist({type:'chain',chain},response=>{
       const saved=structuredClone(response.chain || chain);
       known.set(saved.rootId,saved);
+      if(saved.status==='complete')profilePending.delete(saved.rootId);
       if(nav.activeChain?.rootId===saved.rootId)nav.activeChain=saved;
     });
   }
@@ -169,8 +171,27 @@
           candidates[index]=known.get(candidates[index].rootId);
         }
         if(dirty){schedule(75);return;}
-        const candidate=candidates.find(chain=>chain.status!=='complete'&&!nav.visitedRoots.includes(chain.rootId));
+        // A following part can mount only after the profile scrolls. Give the
+        // profile one scroll and a render interval before leaving for detail.
+        // Retain unresolved roots so virtualization cannot silently drop them;
+        // only chains.candidates may confirm membership in an explicit group.
+        for(const candidate of candidates){
+          if(candidate.status==='complete'||nav.visitedRoots.includes(candidate.rootId)){
+            profilePending.delete(candidate.rootId);continue;
+          }
+          const pending=profilePending.get(candidate.rootId);
+          if(pending)pending.chain=candidate;
+          else{
+            if(!await saveChain(candidate)||!await canAct(path))return;
+            const saved=known.get(candidate.rootId);
+            if(saved.status!=='complete')profilePending.set(candidate.rootId,{chain:saved,readyAt:null});
+          }
+        }
+        if(dirty){schedule(75);return;}
+        const pending=[...profilePending.values()].find(item=>Number.isFinite(item.readyAt)&&Date.now()>=item.readyAt);
+        const candidate=pending?.chain;
         if(candidate){
+          profilePending.delete(candidate.rootId);
           const link=findLink(candidate.rootId),scroller=threadsArchiveScroller();
           if(!link||!scroller){candidate.status='incomplete';candidate.reason='상세 화면 링크를 찾지 못함';nav.visitedRoots.push(candidate.rootId);if(!await saveChain(candidate))return;}
           else{
@@ -188,6 +209,8 @@
       if(!await canAct(path))return;
       const scroller=threadsArchiveScroller();
       if(!scroller){await end('스크롤 영역을 찾지 못함');return;}
+      if(nav.mode==='profile')for(const pending of profilePending.values())
+        if(pending.readyAt===null)pending.readyAt=Date.now()+intervalMs;
       scroller.scrollBy({top:Math.max(1,Math.min(innerHeight,scroller.clientHeight)*0.65),behavior:'instant'});
       rounds++;nextScrollAt=Date.now()+intervalMs;schedule(intervalMs);
     }catch(error){await end(`화면 읽기 또는 저장 실패: ${error.message}. 이미 저장한 글은 내보낼 수 있음`);}
