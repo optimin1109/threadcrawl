@@ -1,4 +1,5 @@
 import {exportCaptureMarkdown} from './export.mjs';
+import {exportCaptureHtml} from './html-export.mjs';
 const message = document.getElementById('message');
 const diagnostics = document.getElementById('diagnostics');
 let errorText = '', refreshing = false, busy = false, resetTarget = null, repairTarget = null;
@@ -41,7 +42,7 @@ async function refresh() {
       ? `@${capture.account}의 미완료 연속글만 다시 수집합니다. @${capture.account} 프로필이나 해당 계정의 글을 연 탭에서 실행하세요. 저장된 글은 그대로 보존합니다.`
       : '미완료로 남은 연속글만 다시 찾아 수집합니다. 저장된 글은 그대로 보존합니다.';
     button('stop').disabled = !running;
-    button('save').disabled = button('markdown').disabled = !capture;
+    button('save').disabled = button('html').disabled = button('markdown').disabled = !capture;
     button('reset').disabled = !resetTarget;
     button('reset').textContent = capture ? `@${capture.account} 수집 기록 초기화` : '이 계정 수집 기록 초기화';
   } finally { refreshing = false; }
@@ -49,7 +50,7 @@ async function refresh() {
 async function action(work) {
   if (busy) return;
   busy = true; errorText = '';
-  for (const id of ['start', 'repair', 'stop', 'save', 'markdown', 'reset']) button(id).disabled = true;
+  for (const id of ['start', 'repair', 'stop', 'save', 'html', 'markdown', 'reset']) button(id).disabled = true;
   try { await work(); }
   catch (error) { errorText = error.message; message.textContent = errorText; }
   finally { busy = false; await refresh().catch(error => { message.textContent = error.message; }); }
@@ -65,15 +66,18 @@ button('reset').onclick = () => action(async () => {
   const confirmed = window.confirm(`@${target.account}의 저장된 글·연속글·수집 오류와 진행 기록을 모두 삭제합니다.\n\n이 작업은 되돌릴 수 없습니다. 필요한 자료는 취소 후 ‘원본 자료 저장 (JSON v2)’으로 먼저 보관하세요.\n다른 계정의 기록과 이미 내려받은 파일은 삭제하지 않습니다.\n\n@${target.account}의 수집 기록을 초기화할까요?`);
   if (confirmed) await send('reset', target);
 });
-for (const format of ['save', 'markdown']) button(format).onclick = () => action(async () => {
+const exporters = {
+  save: {extension: 'json', type: 'application/json;charset=utf-8', render: capture => JSON.stringify(capture, null, 2)},
+  html: {extension: 'html', type: 'text/html;charset=utf-8', render: exportCaptureHtml},
+  markdown: {extension: 'md', type: 'text/markdown;charset=utf-8', render: exportCaptureMarkdown},
+};
+for (const [format, exporter] of Object.entries(exporters)) button(format).onclick = () => action(async () => {
   const {capture} = await send('export');
   if (!capture) return;
-  const markdown = format === 'markdown';
-  const blob = new Blob([markdown ? exportCaptureMarkdown(capture) : JSON.stringify(capture, null, 2)],
-    {type: markdown ? 'text/markdown;charset=utf-8' : 'application/json;charset=utf-8'});
+  const blob = new Blob([exporter.render(capture)], {type: exporter.type});
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
-  link.href = url; link.download = `${capture.account}-capture-v2.${markdown ? 'md' : 'json'}`;
+  link.href = url; link.download = `${capture.account}-capture-v2.${exporter.extension}`;
   link.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 });
 refresh().catch(error => { message.textContent = error.message; });

@@ -14,7 +14,7 @@
   const profilePending=new Map();
   nav.visitedRoots ||= [];
   let stopped=false,stopReason=null,busy=false,dirty=false,timer,deadline,scheduledAt=0,observer;
-  let previous='',rounds=0,lastChange=Date.now(),lastScrollAt=-Infinity,lastScrollSignature='',unchangedCleanPage=false,
+  let previous='',rounds=0,lastChange=Date.now(),lastScrollAt=-Infinity,lastScrollSignature='',lastScrollTop=0,lastScroller=null,unchangedCleanPage=false,
     nextExpandAt=0,transitionAt=Date.now(),detailProgressAt=Date.now();
   const expanded=new Set();
   const halt=(removeListener=false)=>{
@@ -56,6 +56,19 @@
   }
   const findLink=id=>[...(threadsArchiveRegion()?.querySelectorAll('time[datetime]') || [])]
     .map(t=>t.closest('a')).find(a=>a?.getAttribute('href')?.split('?')[0]===id);
+  function knownCardCoversViewport(page,scroller){
+    const offset=scroller===document.scrollingElement?0:scroller.getBoundingClientRect().top+(scroller.clientTop || 0);
+    const top=Math.max(0,offset),bottom=Math.min(innerHeight,offset+scroller.clientHeight);
+    if(!Number.isFinite(top)||!Number.isFinite(bottom)||bottom<=top)return false;
+    const ids=new Set(page.cards.map(card=>card.id));
+    for(const row of threadsArchiveRegion()?.querySelectorAll('[data-pressable-container="true"]') || []){
+      const id=row.querySelector('time[datetime]')?.closest('a')?.getAttribute('href')?.split('?')[0];
+      if(!ids.has(id))continue;
+      const bounds=row.getBoundingClientRect();
+      if(Number.isFinite(bounds.top)&&Number.isFinite(bounds.bottom)&&bounds.top<=top&&bounds.bottom>=bottom)return true;
+    }
+    return false;
+  }
   async function saveChain(chain){
     return persist({type:'chain',chain},response=>{
       const saved=structuredClone(response.chain || chain);
@@ -212,21 +225,26 @@
             link.click();schedule(intervalMs);return;
           }
         }
-        if(!page.loading&&Date.now()-lastChange>=30000){await end('30초 동안 새 글 없음. 현재 목록 끝 또는 로딩 제한인지 미확인');return;}
       }
-      // Only accelerate a newly rendered, fully acknowledged duplicate viewport.
-      // Preserve overlap and slow down immediately for new/loading/unresolved work.
-      const fast=nav.mode==='profile'&&nav.workflow!=='repair'&&unchangedCleanPage&&
-        signature!==lastScrollSignature&&page.view==='profile'&&!page.loading&&!page.issues.length&&
+      const scroller=threadsArchiveScroller();
+      if(!scroller){await end('스크롤 영역을 찾지 못함');return;}
+      // A tall saved card can retain the same DOM across several viewports.
+      // Require real progress inside that verified card, not blank space below it.
+      const savedProfile=nav.mode==='profile'&&nav.workflow!=='repair'&&unchangedCleanPage&&
+        page.view==='profile'&&!page.loading&&!page.issues.length&&
         page.cards.length>0&&page.cards.every(card=>Array.isArray(card.issues)&&!card.issues.length)&&!profilePending.size;
+      const knownProgress=savedProfile&&scroller===lastScroller&&scroller.scrollTop>lastScrollTop&&knownCardCoversViewport(page,scroller);
+      if(knownProgress)lastChange=Date.now();
+      if(nav.mode==='profile'&&!page.loading&&Date.now()-lastChange>=30000){await end('30초 동안 새 글 없음. 현재 목록 끝 또는 로딩 제한인지 미확인');return;}
+      const fast=savedProfile&&(signature!==lastScrollSignature||knownProgress);
       const scrollInterval=fast?Math.min(500,intervalMs):intervalMs;
       const nextScrollAt=lastScrollAt+scrollInterval;
       if(Date.now()<nextScrollAt){schedule(nextScrollAt-Date.now());return;}
       if(!await canAct(path))return;
-      const scroller=threadsArchiveScroller();
-      if(!scroller){await end('스크롤 영역을 찾지 못함');return;}
+      if(scroller!==threadsArchiveScroller()){schedule(75);return;}
       if(nav.mode==='profile')for(const pending of profilePending.values())
         if(pending.readyAt===null)pending.readyAt=Date.now()+intervalMs;
+      lastScroller=scroller;lastScrollTop=scroller.scrollTop;
       scroller.scrollBy({top:Math.max(1,Math.min(innerHeight,scroller.clientHeight)*0.65),behavior:'instant'});
       rounds++;lastScrollAt=Date.now();lastScrollSignature=signature;schedule(scrollInterval);
     }catch(error){await end(`화면 읽기 또는 저장 실패: ${error.message}. 이미 저장한 글은 내보낼 수 있음`);}

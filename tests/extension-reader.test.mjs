@@ -22,6 +22,27 @@ const photoCarousel = `<div><div>${photoButton}</div>${panoramaButton}<div>${pho
 const unavailablePost = '<div class="x9f619 xh8yej3 x1c1uobl xyri2b x14vqqas"><div><span dir="auto">이용할 수 없는 게시물</span></div></div>';
 const previewHref = 'https://l.threads.com/?u=https%3A%2F%2Fexample.com%2Farticle%3Fid%3D42&amp;e=tracking';
 const linkPreview = (image = true, href = previewHref) => `<div class="x1e56ztr xw7yly9 x1j9u4d2"><a role="link" tabindex="0" target="_blank" rel="nofollow noreferrer" href="${href}"><div>${image ? '<img src="https://cdn.example/image.jpg" alt="">' : ''}<div><div class="xcrlgei"><div><svg><path d="M0 0"></path></svg><span dir="auto" translate="no"><span>example.com</span></span></div><div class="x1gslohp"><span dir="auto"><span>기사 제목</span></span></div></div></div></div></a></div>`;
+const siteIcon = '<div class="x14hiurz xr9e8f9 x1e4oeot x1ui04y5 x6en5u8 x2lah0s"><img alt=""></div>';
+const videoPreview = '<div><div class="x78zum5 xdt5ytf x1xmf6yo xf68679"><div><img alt=""><div><video playsinline></video></div><div><div aria-label="Video player" role="group"><div role="presentation"></div></div></div></div></div></div>';
+
+test('a verified link preview with its site icon preserves the numbered caption', () => {
+  const extra=linkPreview().replace('<svg><path d="M0 0"></path></svg>',siteIcon);
+  const card=read(extra,'확인한 본문&nbsp;<div class="x1rg5ohu"><span>3</span><span>/</span><span>3</span></div>').cards[0];
+  assert.deepEqual(card.issues,[]);
+  assert.equal(card.text,'확인한 본문');assert.equal(card.label,'3/3');
+  assert.equal(card.notes[0].type,'link-preview');
+  for(const icon of [siteIcon.replace('</div>','<button>추가</button></div>'),siteIcon.replace('xr9e8f9','unknown'),siteIcon.replace('<img alt="">','<span>숨은 내용</span>')])
+    assert.ok(read(linkPreview().replace('<svg><path d="M0 0"></path></svg>',icon)).cards[0].issues.length);
+});
+
+test('the observed textless video player is a media note without invalidating its caption', () => {
+  const card=read(videoPreview,'동영상 앞 본문&nbsp;<div class="x1rg5ohu"><span>1</span><span>/</span><span>2</span></div>').cards[0];
+  assert.equal(card.text,'동영상 앞 본문');assert.equal(card.label,'1/2');
+  assert.deepEqual(card.issues,[]);
+  assert.deepEqual(card.notes,[{type:'video',url:`https://www.threads.com${id}`}]);
+  for(const extra of [videoPreview.replace('Video player','Unknown player'),videoPreview.replace('xf68679','unknown'),videoPreview.replace('</video>','</video><p>다른 본문</p>'),videoPreview.replace('</video>','</video><a href="/@other/post/ID">다른 글</a>'),videoPreview.replace('</video>','</video><iframe></iframe>')])
+    assert.ok(read(extra).cards[0].issues.length);
+});
 
 test('keeps the whole long attachment, whitespace and caption independently', () => {
   const long = '첫 문단\n\n' + '긴 글 😀 '.repeat(1500) + '\n 마지막 문장  ';
@@ -31,6 +52,15 @@ test('keeps the whole long attachment, whitespace and caption independently', ()
   assert.equal(page.cards[0].attachments[0].text, long);
   assert.equal(page.cards[0].attachments[0].url, 'https://www.threads.com/@sample/post/ABC123/media');
   assert.deepEqual(page.cards[0].issues, []);
+});
+test('the observed short text attachment without an expansion label keeps its full text', () => {
+  const text='첫 문단\n\n짧은 첨부 전체.  ';
+  const extra=attachment(text).replace('<div><div><div><span dir="auto">','<div class="x78zum5 xdt5ytf x1n2onr6 x1o1r8g3"><div><div class="x78zum5 xdt5ytf x1n2onr6"><span dir="auto">').replace('<span dir="auto">더 보기</span>','');
+  const card=read(extra).cards[0];
+  assert.deepEqual(card.issues,[]);
+  assert.equal(card.attachments[0].text,text);
+  for(const unknown of [extra.replace('x1o1r8g3','unknown'),extra.replace('/ABC123/media','/OTHER/media'),extra.replace('</a>','<button>추가</button></a>'),extra.replace('</a>','추가 본문</a>')])
+    assert.ok(read(unknown).cards[0].issues.length);
 });
 test('refuses to attach text belonging to another post', () => {
   const card = read(attachment('인용된 다른 글', '/@other/post/XYZ')).cards[0];
@@ -43,6 +73,28 @@ test('retains ordinary captions and service continuation labels', () => {
   assert.equal(card.label, '2/3');
   assert.deepEqual(card.attachments, []);
   assert.deepEqual(card.issues, []);
+});
+
+const inlineMention = '<div class="x1rg5ohu"><span class="xjp7ctv"><div><a href="/@mentioned.person" role="link" tabindex="0"><span translate="no">@mentioned.person</span></a></div></span></div>';
+test('inline account mentions are preserved as body text instead of being mistaken for numbering badges', () => {
+  for (const numbered of [false, true]) {
+    const badge=numbered?'&nbsp;<div class="x1rg5ohu"><div><span>1</span><div><span>/</span></div><span>6</span></div></div>':'';
+    const card=read('',`앞 문장 ${inlineMention} 뒤 문장${badge}`).cards[0];
+    assert.equal(card.text,'앞 문장 @mentioned.person 뒤 문장');
+    assert.equal(card.label,numbered?'1/6':null);
+    assert.deepEqual(card.issues,[]);
+  }
+});
+
+test('an unknown inline numbering-shaped wrapper is not silently accepted as a mention', () => {
+  for (const mention of [
+    inlineMention.replace('/@mentioned.person','/@other'),
+    inlineMention.replace('/@mentioned.person','https://example.com/'),
+    inlineMention.replace('</a>','<button>더 보기</button></a>'),
+    inlineMention.replace('</span></a>','</span><img></a>'),
+    inlineMention.replace('translate="no"','translate="yes"'),
+    '<div class="x1rg5ohu">확인되지 않은 글 조각</div>',
+  ]) assert.ok(read('',`앞 ${mention} 뒤`).cards[0].issues.length);
 });
 test('unknown extra content is reported instead of silently lost', () => {
   const card = read('<div>알 수 없는 첨부</div>').cards[0];

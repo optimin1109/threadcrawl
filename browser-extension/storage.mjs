@@ -217,7 +217,7 @@ export class CaptureStore {
       for (const incoming of page.cards) {
         const old = await request(stores.cards.get([control.account, incoming.id]));
         const merged = mergeCard(old?.card, incoming);
-        if (!cleanCard(old?.card) || !cleanCard(incoming) || merged.issue || cardContent(old.card) !== cardContent(incoming))
+        if (!cleanCard(old?.card) || !cleanCard(incoming) || merged.issue || cardContent(old.card) !== cardContent(merged.card))
           unchangedCleanPage = false;
         if (old) meta.duplicateCount++;
         else meta.cardCount++;

@@ -229,13 +229,15 @@ test('a persisted relationship conflict prevents completion even if all numbers 
 
 test('popup keeps diagnostic counts folded and distinguishes date span from coverage', async () => {
   const html = readFileSync(new URL('../browser-extension/popup.html', import.meta.url), 'utf8');
-  const script = readFileSync(new URL('../browser-extension/popup.mjs', import.meta.url), 'utf8').replace(/^import .*;\r?\n/, '');
+  const script = readFileSync(new URL('../browser-extension/popup.mjs', import.meta.url), 'utf8').replace(/^import .*;\r?\n/gm, '');
   const dom = new JSDOM(html, { runScripts: 'outside-only' });
   dom.window.chrome = { runtime: { sendMessage: async () => ({ running: true,
     capture: { account: 'sample', status: '수집 중', cardCount: 40, snapshots: 125, duplicateCount: 730, oldestTimestamp: '2025-09-09T00:00:00Z', newestTimestamp: '2026-09-19T00:00:00Z', chainCount: 2, completedChainCount: 1, incompleteChainCount: 1 },
     navigation: { mode: 'detail', activeChain: { rootId: id(1), total: 20, members: Array.from({ length: 19 }, (_, i) => ({ part: i + 1, id: id(i + 1) })), missing: [20] } },
   }) } };
   dom.window.setInterval = () => 0;
+  dom.window.exportCaptureHtml = () => '';
+  dom.window.exportCaptureMarkdown = () => '';
   try {
     dom.window.eval(script);
     await new Promise(resolve => setImmediate(resolve));

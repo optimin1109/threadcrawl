@@ -242,6 +242,64 @@ test('같은 본문의 뒤늦은 순번만 보강하면 저장본·완료 개수
   } finally { await store.close(); }
 });
 
+test('본문·순번을 전혀 못 읽은 저장본은 같은 메타데이터의 깨끗한 재수집으로 회복해 연속글을 완료한다', async () => {
+  for (const text of ['재수집으로 확인한 작성자 본문', '']) {
+    const store = new CaptureStore({indexedDB: new IDBFactory()});
+    try {
+      await store.start('tester', 7, identity.runId);
+      const unknown = {...card('first'), text: null, label: null,
+        issues: [{id: '/@tester/post/first', reason: '확인된 본문 컨테이너를 찾지 못함'}],
+        notes: [{type: 'unavailable-content', text: '이용할 수 없는 게시물'}]};
+      const first = {...card('first', text), label: '1/2', ...(text === '' ? {notes: [{type: 'image', url: 'https://www.threads.com/@tester/post/first/media'}]} : {})};
+      const second = {...card('second'), label: '2/2'};
+      await store.append(page(unknown, second), identity);
+      await store.recordChain(completeChain([first, second]), identity);
+      assert.deepEqual((await store.getChains())[0].missing, [1]);
+      await store.append(page(first), identity);
+      const saved = await store.recordChain(completeChain([first, second]), identity);
+      const capture = await store.exportCapture(), status = await store.status();
+      assert.equal(capture.cards[0].text, text); assert.equal(capture.cards[0].label, '1/2');
+      assert.deepEqual(capture.cards[0].issues, []);
+      assert.ok(capture.cards[0].notes.some(note => note.type === 'unavailable-content'));
+      if (text === '') assert.ok(capture.cards[0].notes.some(note => note.type === 'image'));
+      assert.equal(saved.chain.status, 'complete'); assert.deepEqual(saved.chain.missing, []);
+      assert.equal(status.capture.completedChainCount, 1); assert.equal(status.capture.incompleteChainCount, 0);
+      assert.deepEqual(capture.issues, []);
+      await store.append(page(unknown), identity);
+      const afterLateFailure = await store.exportCapture();
+      assert.equal(afterLateFailure.cards[0].text, text); assert.equal(afterLateFailure.cards[0].label, '1/2');
+      assert.deepEqual(afterLateFailure.cards[0].issues, []);
+    } finally { await store.close(); }
+  }
+});
+
+test('읽지 못한 저장본 복구는 확정된 빈 본문·원문·순번과 다른 메타데이터·첨부·미검증 번호를 덮어쓰지 않는다', async () => {
+  const variants = [
+    {name: 'confirmed empty body', previous: {text: ''}},
+    {name: 'confirmed body', previous: {text: '확정된 원문'}},
+    {name: 'conflicting label', previous: {label: '1/3'}},
+    {name: 'no previous read failure', previous: {issues: []}},
+    {name: 'timestamp changed', incoming: {timestamp: '2026-09-18T00:00:00Z'}},
+    {name: 'context changed', incoming: {context: 'replies'}},
+    {name: 'incoming issue', incoming: {issues: [{reason: '아직 본문 미확인'}]}},
+    ...['0/2', '2/1', '1/0', '1/1001', '01/2', '1/2\n'].map(label => ({name: `invalid label ${JSON.stringify(label)}`, incoming: {label}})),
+    {name: 'attachment removed', previous: {attachments: [{type: 'long-text', url: 'https://www.threads.com/@tester/post/first/media', text: '보존할 첨부', source: 'profile-dom'}]}},
+  ];
+  for (const variant of variants) {
+    const store = new CaptureStore({indexedDB: new IDBFactory()});
+    try {
+      await store.start('tester', 7, identity.runId);
+      const previous = {...card('first'), text: null, label: null,
+        issues: [{id: '/@tester/post/first', reason: '확인된 본문 컨테이너를 찾지 못함'}], ...variant.previous};
+      const incoming = {...card('first', '새로 읽은 본문'), label: '1/2', ...variant.incoming};
+      await store.append(page(previous), identity); await store.append(page(incoming), identity);
+      const result = await store.exportCapture();
+      assert.deepEqual(result.cards[0], previous, variant.name);
+      assert.match(result.issues[0].reason, /최초 확인/, variant.name);
+    } finally { await store.close(); }
+  }
+});
+
 test('서로 다른 기존 순번을 보존하면 완료 요청도 미완료로 정규화한다', async () => {
   const store = new CaptureStore({indexedDB: new IDBFactory()});
   try {

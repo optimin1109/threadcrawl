@@ -9,6 +9,13 @@ export function mergeCard(previous, incoming) {
   const base = card => JSON.stringify([card.timestamp, card.text, card.label, card.context]);
   const enrichesLabel = previous.label == null && typeof incoming.label === 'string'
     && previous.timestamp === incoming.timestamp && previous.text === incoming.text && previous.context === incoming.context;
+  const incomingLabel = typeof incoming.label === 'string' && incoming.label.match(/^([1-9]\d{0,3})\/([1-9]\d{0,3})$/);
+  // A failed container read is an unknown body, not confirmed empty text. A
+  // clean reread may fill that placeholder without freezing its null label.
+  const recoversUnread = previous.text === null && previous.label === null && previous.issues.length > 0 &&
+    previous.id === incoming.id && previous.timestamp === incoming.timestamp && previous.context === incoming.context &&
+    typeof incoming.text === 'string' && incomingLabel && incomingLabel[0] === incoming.label &&
+    Number(incomingLabel[1]) <= Number(incomingLabel[2]) && Number(incomingLabel[2]) <= 1000;
   const preservesAttachments = previous.attachments.every(old => incoming.attachments.some(next =>
     next.type === old.type && next.url === old.url && next.source === old.source &&
     typeof next.text === 'string' && typeof old.text === 'string' && next.text.startsWith(old.text)));
@@ -16,7 +23,7 @@ export function mergeCard(previous, incoming) {
   let issue = null;
   if (fields(previous) !== fields(incoming)) {
     if (!incoming.issues.length && preservesAttachments
-      && ((previous.issues.length && previous.label === incoming.label) || base(previous) === base(incoming) || enrichesLabel))
+      && ((previous.issues.length && previous.label === incoming.label) || base(previous) === base(incoming) || enrichesLabel || recoversUnread))
       card = structuredClone(incoming);
     else issue = {id: incoming.id, reason: '동일 게시물의 본문/첨부/날짜/분류가 달라짐: 최초 확인 내용 보존'};
   } else if (previous.issues.length && !incoming.issues.length) card = structuredClone(incoming);

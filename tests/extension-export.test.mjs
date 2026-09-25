@@ -23,6 +23,12 @@ const fencePattern = /^(`{3,})text\n([\s\S]*?)\n\1(?=\n|$)/gm;
 const textBlocks = markdown => [...markdown.matchAll(fencePattern)].map(match => match[2]);
 const outsideText = markdown => markdown.replace(fencePattern, '');
 
+test('video presence is explained without claiming to archive audio or captions', () => {
+  const output=exportCaptureMarkdown(capture([card({notes:[{type:'video',url:'https://www.threads.com/@hongso0921/post/First_01'}]})]));
+  assert.match(output,/동영상 원본·음성·자막은 저장하지 않았습니다/);
+  assert.match(output,/\[동영상이 있는 원문\]\(https:\/\/www\.threads\.com\/@hongso0921\/post\/First_01\)/);
+});
+
 test('7,835자를 넘는 긴 첨부의 끝·공백·빈 줄·원래 줄바꿈을 보존한다', () => {
   const longText = '  시작\t😀\r\n' + '가나다라 마바사아 자차카타 파하 '.repeat(450)
     + '\n\n  마지막 줄  \n';

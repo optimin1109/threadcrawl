@@ -135,6 +135,7 @@ function cardMarkdown(card, date) {
   pieces.push(bodyText(card.text, '본문'));
   for(const note of card.notes || []) {
     if(note?.type==='image') pieces.push(`이미지 원본과 이미지 속 글자는 저장하지 않았습니다. ${sourceLink('이미지 보기',note.url,true)}`);
+    if(note?.type==='video') pieces.push(`동영상 원본·음성·자막은 저장하지 않았습니다. ${sourceLink('동영상이 있는 원문',note.url)}`);
     if(note?.type==='location') pieces.push(`장소 태그: ${inline(note.text)}`);
     if(note?.type==='unavailable-content') {
       pieces.push(`인용·연결된 원문은 이용할 수 없어 저장하지 못했습니다. 화면 안내: ${inline(note.text)}`);

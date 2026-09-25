@@ -8,7 +8,7 @@
 - Whitespace: `git diff --check`.
 - Chrome installation and live validation: [`browser-extension/README.md`](../../browser-extension/README.md).
 
-The Chrome extension exports JSON v2 and Markdown directly. Its v2 IndexedDB store is independent of the original desktop capture format. Automated tests use synthetic content, jsdom, and fake-indexeddb; no paid scraping API is part of the test suite.
+The Chrome extension exports JSON v2, Markdown, and an offline HTML reader directly. Its v2 IndexedDB store is independent of the original desktop capture format. Automated tests use synthetic content, jsdom, and fake-indexeddb; no paid scraping API is part of the test suite.
 
 ## Delivery agreement
 

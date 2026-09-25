@@ -80,7 +80,23 @@ function readThreadsPage(options={}) {
     if(hasCaption) for (const p of body.children) {
       const span = p.firstElementChild;
       if (p.tagName !== 'DIV' || span?.tagName !== 'SPAN' || span.getAttribute('dir') !== 'auto' || p.children.length !== 1) { fail('본문 단락/긴 첨부/펼치기 구조 미검증'); continue; }
-      const badge = [...span.children].find(x=>x.tagName==='DIV' && x.classList.contains('x1rg5ohu'));
+      const markers = [...span.children].filter(x=>x.tagName==='DIV' && x.classList.contains('x1rg5ohu'));
+      // Account mentions share the badge wrapper class. Preserve their text;
+      // only the service's numeric marker is removed from the author's body.
+      const isMention = marker => {
+        const outer=marker.firstElementChild, inner=outer?.firstElementChild, link=inner?.firstElementChild, name=link?.firstElementChild;
+        const href=link?.getAttribute('href'), account=href?.match(/^\/@([A-Za-z0-9_](?:[A-Za-z0-9_.]{0,28}[A-Za-z0-9_])?)$/)?.[1];
+        return marker.childElementCount===1 && outer?.matches('span.xjp7ctv') && outer.childElementCount===1 &&
+          inner?.tagName==='DIV' && inner.childElementCount===1 && link?.matches('a[role="link"][tabindex="0"]') &&
+          link.childElementCount===1 && name?.matches('span[translate="no"]') && name.childElementCount===0 &&
+          account && name.textContent===`@${account}` && marker.textContent===name.textContent &&
+          !marker.querySelector('button,[role="button"],img,video,time,input,iframe,[contenteditable]');
+      };
+      const numeric=markers.filter(marker=>/^\d+\/\d+$/.test(marker.textContent.replace(/\s/g,'')));
+      if(numeric.length>1 || markers.some(marker=>!numeric.includes(marker)&&!isMention(marker))) {
+        fail('서비스 순번 표식 구조 미검증'); continue;
+      }
+      const badge = numeric[0];
       if (badge) {
         const label = badge.textContent.replace(/\s/g,'');
         const tokens = [...badge.querySelectorAll('span')].map(s=>s.textContent.trim());
@@ -135,6 +151,20 @@ function readThreadsPage(options={}) {
           (card.notes ??= []).push({type:'image',url:`https://www.threads.com${id}/media`});
         continue;
       }
+      // Observed inline video: retain its presence, not the CDN source, audio
+      // or captions. Unknown controls or extra text still need verification.
+      const videoFrame=extra.firstElementChild;
+      if(extra.tagName==='DIV' && extra.childElementCount===1 &&
+          videoFrame?.matches('div.x78zum5.xdt5ytf.x1xmf6yo.xf68679') &&
+          extra.querySelectorAll('video').length===1 && extra.querySelector('video[playsinline]') &&
+          extra.querySelectorAll('[aria-label="Video player"][role="group"]').length===1 &&
+          !extra.textContent.trim() && !extra.matches('[role],[tabindex],[contenteditable]') &&
+          [...extra.querySelectorAll('*')].every(node=>['DIV','SPAN','IMG','VIDEO'].includes(node.tagName)) &&
+          !extra.querySelector('[tabindex],[contenteditable],[data-pressable-container]') &&
+          [...extra.querySelectorAll('[role]')].every(node=>node.matches('[aria-label="Video player"][role="group"],div[role="presentation"]'))) {
+        (card.notes ??= []).push({type:'video',url:`https://www.threads.com${id}`});
+        continue;
+      }
       if(href?.startsWith('/search?') && !extra.querySelector('img,video,button,[role="button"],time')) {
         const locationUrl=new URL(href,location.origin);
         if(/^\d+$/.test(locationUrl.searchParams.get('location_id') || '') &&
@@ -154,6 +184,9 @@ function readThreadsPage(options={}) {
       const titleSpan=titleRow?.querySelector(':scope > span[dir="auto"]');
       const plainSpan=span=>span?.childElementCount===1 && span.firstElementChild.tagName==='SPAN' &&
         span.firstElementChild.childElementCount===0 && span.textContent===span.firstElementChild.textContent;
+      const icon=domainRow?.firstElementChild;
+      const siteIcon=icon?.matches('div.x14hiurz.xr9e8f9.x1e4oeot.x1ui04y5.x6en5u8.x2lah0s') &&
+        icon.childElementCount===1 && icon.firstElementChild.tagName==='IMG' && !icon.textContent.trim();
       const previewShape=extra.matches('div.x1e56ztr.xw7yly9.x1j9u4d2') && extra.childElementCount===1 &&
         link===extra.firstElementChild && extra.querySelectorAll('a').length===1 &&
         link.matches('a[role="link"][tabindex="0"][target="_blank"]') &&
@@ -162,7 +195,7 @@ function readThreadsPage(options={}) {
           (previewParts.length===2 && previewParts[0].tagName==='IMG')) &&
         previewText?.tagName==='DIV' && previewText.childElementCount===1 && metadata?.matches('div.xcrlgei') &&
         metadata.childElementCount===2 && domainRow?.tagName==='DIV' && domainRow.childElementCount===2 &&
-        domainRow.firstElementChild.tagName.toLowerCase()==='svg' && domainRow.lastElementChild===domainSpan &&
+        (icon?.tagName.toLowerCase()==='svg' || siteIcon) && domainRow.lastElementChild===domainSpan &&
         titleRow?.matches('div.x1gslohp') && titleRow.childElementCount===1 && plainSpan(domainSpan) && plainSpan(titleSpan) &&
         domainSpan.textContent.trim() && titleSpan.textContent.trim() &&
         extra.textContent.replace(/\s/g,'')===(domainSpan.textContent+titleSpan.textContent).replace(/\s/g,'') &&
@@ -185,8 +218,12 @@ function readThreadsPage(options={}) {
           continue;
         }
       }
-      if (!validHref || spans.length!==2 || !spans[0].querySelector('span') ||
-          !/^(더 보기|See more|See More|View more)$/.test(spans[1].textContent.trim()) ||
+      const shortText=spans.length===1 && link?.firstElementChild?.matches('div.x78zum5.xdt5ytf.x1n2onr6.x1o1r8g3') &&
+        spans[0].parentElement.matches('div.x78zum5.xdt5ytf.x1n2onr6') &&
+        extra.textContent===spans[0].textContent &&
+        !extra.querySelector('a a,input,iframe,audio,[contenteditable],[data-pressable-container]');
+      const expandedLabel=spans.length===2 && /^(더 보기|See more|See More|View more)$/.test(spans[1].textContent.trim());
+      if (!validHref || !(shortText || expandedLabel) || !spans[0].querySelector('span') ||
           link.querySelector('img,video,button,[role="button"],time')) {
         fail('첨부/설문/본문 뒤 구조 미검증'); continue;
       }
@@ -194,7 +231,7 @@ function readThreadsPage(options={}) {
       if (!text.trim()) { fail('긴 첨부 본문이 비어 있음'); continue; }
       card.attachments.push({type:'long-text',url:`https://www.threads.com${id}/media`,text,source:'profile-dom'});
     }
-    if(!hasCaption && !(card.notes || []).some(note=>note.type==='image')) fail('본문 구조 변경 또는 미디어/첨부 전용 구조 미검증');
+    if(!hasCaption && !(card.notes || []).some(note=>['image','video'].includes(note.type))) fail('본문 구조 변경 또는 미디어/첨부 전용 구조 미검증');
   }
   result.virtualizedPlaceholders = region.querySelectorAll('[data-virtualized="true"]').length;
   if (!result.cards.length && !result.issues.length) issue(null,'읽을 수 있는 게시물 없음: 빈 계정 또는 접근/로딩 상태 미확인');
