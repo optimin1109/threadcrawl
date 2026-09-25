@@ -37,6 +37,25 @@ function sourceLink(label, value, attachment = false) {
   return `${label} URL 미확인 — 원문 식별자를 링크 없이 보존합니다.\n\n${literalBlock(value ?? 'null')}`;
 }
 
+function previewLink(value) {
+  // Link previews may point outside Threads, but they cannot relax the rules
+  // for captured post IDs or long attachments. Reject URL parser cleanup and
+  // credentials, and encode punctuation that can end a Markdown destination.
+  if (typeof value === 'string' && /^https?:\/\//i.test(value)
+    && !/[\u0000-\u0020\u007f-\u009f\\]/.test(value)) {
+    try {
+      const url = new URL(value);
+      if ((url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password) {
+        // IPv6 authority brackets are part of the address, not Markdown text.
+        const target = url.origin + url.href.slice(url.origin.length)
+          .replace(/[()[\]<>]/g, char => `%${char.charCodeAt(0).toString(16).toUpperCase()}`);
+        return `[외부 링크](${target})`;
+      }
+    } catch { /* Keep malformed URLs as literal evidence below. */ }
+  }
+  return `외부 링크 URL 미확인 — 링크 없이 보존합니다.\n\n${literalBlock(value ?? 'null')}`;
+}
+
 function dateOf(timestamp) {
   if (typeof timestamp !== 'string') return null;
   const match = timestamp.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/);
@@ -117,6 +136,12 @@ function cardMarkdown(card, date) {
   for(const note of card.notes || []) {
     if(note?.type==='image') pieces.push(`이미지 원본과 이미지 속 글자는 저장하지 않았습니다. ${sourceLink('이미지 보기',note.url,true)}`);
     if(note?.type==='location') pieces.push(`장소 태그: ${inline(note.text)}`);
+    if(note?.type==='unavailable-content') {
+      pieces.push(`인용·연결된 원문은 이용할 수 없어 저장하지 못했습니다. 화면 안내: ${inline(note.text)}`);
+    }
+    if(note?.type==='link-preview') {
+      pieces.push(`링크 미리보기: ${inline(note.title)}\n\n표시 도메인: ${inline(note.domain)}\n\n${previewLink(note.url)}\n\n외부 원문 전문과 미리보기 이미지는 저장하지 않았습니다.`);
+    }
   }
   for (const [index, attachment] of (card.attachments ?? []).entries()) {
     const type = attachment?.type === 'long-text' ? '긴 첨부' : '첨부(유형 미확인)';
@@ -146,7 +171,7 @@ export function exportCaptureMarkdown(capture) {
   const issues = issueLines(capture.issues);
   if (issues) parts.push(issues);
   if (Array.isArray(capture.chains) && capture.chains.length) {
-    parts.push('## 연속글 확보 상태', '완료는 같은 묶음의 목록 또는 상세 화면에서 1번부터 마지막 번호까지 텍스트 본문을 확보했다는 뜻입니다. 이미지 속 글자·계정의 전체 글 확보나 최초 동시 작성 여부를 뜻하지 않습니다.');
+    parts.push('## 연속글 확보 상태', '완료는 같은 묶음의 목록 또는 상세 화면에서 1번부터 마지막 번호까지 텍스트 본문을 확보했다는 뜻입니다. 이미지 속 글자, 외부 원문 전문, 이용할 수 없는 인용·연결된 원문을 저장했다는 뜻은 아닙니다. 계정의 전체 글 확보나 최초 동시 작성 여부도 뜻하지 않습니다.');
     parts.push(...capture.chains.map(chain => chainMarkdown(chain, capture.cards)));
   }
   const ordered = capture.cards.map((card, index) => ({ card, index, date: dateOf(card.timestamp) }))

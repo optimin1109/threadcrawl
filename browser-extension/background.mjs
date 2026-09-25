@@ -71,6 +71,13 @@ export function createMessageHandler({store, chrome, now = Date.now, maxRecovery
   };
   async function handle(message, sender = {}) {
     const control = await store.getControl();
+    if (message.type === 'reset') {
+      if (sender.tab || !chrome.runtime?.id || sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('popup.html'))
+        throw new Error('초기화는 확장 팝업에서만 요청할 수 있습니다.');
+      if (!control || message.account !== control.account || message.runId !== control.runId)
+        throw new Error('초기화 대상이 바뀌었습니다. 팝업에서 계정을 다시 확인하세요.');
+      return store.resetCapture({account: control.account, runId: control.runId});
+    }
     if (['snapshot', 'checkpoint', 'chain'].includes(message.type)) {
       const identity = {tabId: sender.tab?.id, runId: message.runId};
       try {

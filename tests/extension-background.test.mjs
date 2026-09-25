@@ -9,6 +9,7 @@ function environment() {
   const tab = {id: 7, url: 'https://www.threads.com/@tester', status: 'complete', discarded: false, frozen: false};
   const calls = [];
   const chrome = {
+    runtime: {id: 'test-extension', getURL: path => `chrome-extension://test-extension/${path}`},
     tabs: {query: async () => [tab], get: async () => {if(closed)throw new Error('No tab with id: 7');return {...tab};}, sendMessage: async (_tab, message) => {
       if (!connected) throw new Error('tab gone');
       return message.type === 'ping' ? {running, runId: config?.runId, reason: running ? null : '시간 상한 도달'} : {ok: true};
@@ -19,6 +20,50 @@ function environment() {
 }
 const page = {version: 2, adapter: 'threads-dom-2026-09-19', account: 'tester', capturedAt: '2026-09-19T01:00:00Z', issues: [], blocked: false,
   cards: [{id: '/@tester/post/one', timestamp: '2026-09-19T00:00:00Z', text: '확정된 글', label: null, groupIds: [], issues: [], context: 'threads', attachments: []}]};
+
+const popupSender = {id: 'test-extension', url: 'chrome-extension://test-extension/popup.html'};
+
+test('팝업이 확인한 현재 계정만 초기화하고 이전 실행 메시지·복원 이벤트는 다시 수집하지 않는다', async () => {
+  const store = new CaptureStore({indexedDB: new IDBFactory()}), env = environment();
+  const send = createMessageHandler({store, chrome: env.chrome});
+  try {
+    await send({type: 'start'});
+    const runId = env.config().runId;
+    await send({type: 'snapshot', runId, page}, {tab: {id: 7}});
+    await send({type: 'stop'});
+    const status = await send({type: 'status'}), before = env.calls.length;
+    assert.equal(status.resetRunId, runId);
+    assert.equal((await send({type: 'reset', account: status.capture.account, runId: status.resetRunId}, popupSender)).ok, true);
+    assert.equal((await send({type: 'snapshot', runId, page}, {tab: {id: 7}})).ok, false);
+    assert.equal((await send({type: 'ended', runId, reason: '늦은 종료'}, {tab: {id: 7}})).ok, false);
+    await send.onActivated({tabId: 7});
+    await send.onUpdated(7, {status: 'complete'}, {...env.tab});
+    assert.equal(env.calls.length, before);
+    assert.equal((await send({type: 'status'})).capture, null);
+    assert.equal((await send({type: 'status'})).resetRunId, null);
+    assert.equal((await send({type: 'export'})).capture, null);
+  } finally { await store.close(); }
+});
+
+test('웹페이지·콘텐츠 스크립트·다른 확장·오래된 팝업은 초기화할 계정을 임의 지정하지 못한다', async () => {
+  const store = new CaptureStore({indexedDB: new IDBFactory()}), env = environment();
+  const send = createMessageHandler({store, chrome: env.chrome});
+  try {
+    await send({type: 'start'});
+    const runId = env.config().runId;
+    await send({type: 'snapshot', runId, page}, {tab: {id: 7}});
+    const reset = {type: 'reset', account: 'tester', runId};
+    await assert.rejects(send(reset, popupSender), /먼저 중지/);
+    await send({type: 'stop'});
+    for (const sender of [{}, {tab: {id: 7}, id: 'test-extension', url: env.tab.url},
+      {...popupSender, tab: {id: 7}}, {...popupSender, id: 'another-extension'},
+      {...popupSender, url: 'https://www.threads.com/@tester'}])
+      await assert.rejects(send(reset, sender), /확장 팝업/);
+    await assert.rejects(send({...reset, account: 'other'}, popupSender), /대상이 바뀌/);
+    await assert.rejects(send({...reset, runId: 'old-run'}, popupSender), /대상이 바뀌/);
+    assert.equal((await send({type: 'export'})).capture.cards.length, 1);
+  } finally { await store.close(); }
+});
 
 test('확장 메시지는 본문 없는 상태와 별도 export를 제공하고 같은 탭의 오래된 실행은 거부한다', async () => {
   const store = new CaptureStore({indexedDB: new IDBFactory()});

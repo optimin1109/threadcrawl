@@ -95,6 +95,15 @@ function readThreadsPage(options={}) {
     // posts are valid empty-text parts when every visible image links back to
     // that same post's media surface.
     for (const extra of siblings.slice(hasCaption ? 1 : 0, -1)) {
+      const unavailable=extra.querySelector(':scope > div > span[dir="auto"]');
+      if(extra.matches('div.x9f619.xh8yej3.x1c1uobl.xyri2b.x14vqqas') &&
+          !extra.matches('[role],[tabindex],[contenteditable]') && !extra.querySelector('[role],[tabindex],[contenteditable]') &&
+          extra.querySelectorAll('*').length===2 &&
+          unavailable?.childElementCount===0 && unavailable.textContent.trim()==='이용할 수 없는 게시물' &&
+          extra.textContent.trim()===unavailable.textContent.trim()) {
+        (card.notes ??= []).push({type:'unavailable-content',text:unavailable.textContent.trim()});
+        continue;
+      }
       const links=[...extra.querySelectorAll('a[href]')];
       const link=links.length===1 ? links[0] : null;
       const href=link?.getAttribute('href');
@@ -132,6 +141,47 @@ function readThreadsPage(options={}) {
             locationUrl.searchParams.get('serp_type')==='location_tag' &&
             link.textContent.trim() && extra.textContent.trim()===link.textContent.trim()) {
           (card.notes ??= []).push({type:'location',text:link.textContent.trim()});
+          continue;
+        }
+      }
+      // Preserve the visible preview metadata, not the linked article or CDN
+      // image. Decode only the observed Threads redirect without following it.
+      const previewBody=link?.firstElementChild;
+      const previewParts=[...(previewBody?.children || [])];
+      const previewText=previewParts.at(-1), metadata=previewText?.firstElementChild;
+      const [domainRow,titleRow]=metadata?.children || [];
+      const domainSpan=domainRow?.querySelector(':scope > span[dir="auto"][translate="no"]');
+      const titleSpan=titleRow?.querySelector(':scope > span[dir="auto"]');
+      const plainSpan=span=>span?.childElementCount===1 && span.firstElementChild.tagName==='SPAN' &&
+        span.firstElementChild.childElementCount===0 && span.textContent===span.firstElementChild.textContent;
+      const previewShape=extra.matches('div.x1e56ztr.xw7yly9.x1j9u4d2') && extra.childElementCount===1 &&
+        link===extra.firstElementChild && extra.querySelectorAll('a').length===1 &&
+        link.matches('a[role="link"][tabindex="0"][target="_blank"]') &&
+        ['nofollow','noreferrer'].every(token=>link.relList.contains(token)) && link.childElementCount===1 &&
+        previewBody?.tagName==='DIV' && (previewParts.length===1 ||
+          (previewParts.length===2 && previewParts[0].tagName==='IMG')) &&
+        previewText?.tagName==='DIV' && previewText.childElementCount===1 && metadata?.matches('div.xcrlgei') &&
+        metadata.childElementCount===2 && domainRow?.tagName==='DIV' && domainRow.childElementCount===2 &&
+        domainRow.firstElementChild.tagName.toLowerCase()==='svg' && domainRow.lastElementChild===domainSpan &&
+        titleRow?.matches('div.x1gslohp') && titleRow.childElementCount===1 && plainSpan(domainSpan) && plainSpan(titleSpan) &&
+        domainSpan.textContent.trim() && titleSpan.textContent.trim() &&
+        extra.textContent.replace(/\s/g,'')===(domainSpan.textContent+titleSpan.textContent).replace(/\s/g,'') &&
+        !extra.matches('[role],[tabindex],[contenteditable]') && !extra.querySelector('[contenteditable]') &&
+        [...extra.querySelectorAll('[role],[tabindex]')].every(control=>control===link) &&
+        !extra.querySelector('button,[role="button"],video,audio,input,textarea,select,iframe,object,embed,canvas,time,[data-pressable-container]');
+      if(previewShape && /^https?:\/\//i.test(href) && !/[\u0000-\u0020\u007f-\u009f\\]/.test(href)) {
+        let destination=null;
+        try {
+          const redirect=new URL(href), raw=redirect.searchParams.get('u');
+          if(redirect.origin==='https://l.threads.com' && redirect.pathname==='/' &&
+              !redirect.username && !redirect.password && redirect.searchParams.getAll('u').length===1 &&
+              /^https?:\/\//i.test(raw || '') && !/[\u0000-\u0020\u007f-\u009f\\]/.test(raw)) {
+            const url=new URL(raw);
+            if(['http:','https:'].includes(url.protocol) && !url.username && !url.password) destination=url.href;
+          }
+        } catch { /* Unsupported URLs remain an explicit attachment issue. */ }
+        if(destination) {
+          (card.notes ??= []).push({type:'link-preview',url:destination,domain:domainSpan.textContent.trim(),title:titleSpan.textContent.trim()});
           continue;
         }
       }

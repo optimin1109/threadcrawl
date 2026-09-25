@@ -6,11 +6,15 @@ import {JSDOM} from 'jsdom';
 const file = name => new URL(`../browser-extension/${name}`,import.meta.url);
 const source = name => readFileSync(file(name),'utf8');
 const flush=async()=>{for(let i=0;i<40;i++)await Promise.resolve();};
+const unavailableContent='<div class="x9f619 xh8yej3 x1c1uobl xyri2b x14vqqas"><div><span dir="auto">이용할 수 없는 게시물</span></div></div>';
+const previewUrl=part=>`https://example.org/article?id=${part}`;
+const previewHref=part=>`https://l.threads.com/?u=${encodeURIComponent(previewUrl(part))}&amp;e=synthetic`;
+const linkPreview=(part,image=false)=>`<div class="x1e56ztr xw7yly9 x1j9u4d2"><a href="${previewHref(part)}" role="link" tabindex="0" target="_blank" rel="nofollow noreferrer"><div>${image?'<img alt="기사 제목">':''}<div><div class="xcrlgei"><div><svg><path></path></svg><span dir="auto" translate="no"><span>example.org</span></span></div><div class="x1gslohp"><span dir="auto"><span>기사 제목 ${part}</span></span></div></div></div></div></a></div>`;
 function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,redirectOnCheckpoint=null,
   mutateDetailSnapshots=false,missingRegionA=false,expandUnrelatedReplies=false,profileCompleteA=false,
   imageInProfileA=false,mediaOnlySecondA=false,progressiveDetailA=false,detailTimeoutMs=120000,
   delayedProfileSecondA=false,removeProfileRootA=false,photoButtonsInProfileA=false,mutateProfileCompleteA=false,lateProfileRootA=false,
-  downgradeProfileCompleteA=false,downgradeDetailCompleteA=false}={}) {
+  downgradeProfileCompleteA=false,downgradeDetailCompleteA=false,profileExtrasA=null}={}) {
   const badge=(part,n)=>`<div class="x1rg5ohu"><span>${part}</span><span>/</span><span>${n}</span></div>`;
   const row=(prefix,part,n,detail=false,owner='sample')=>`<div data-pressable-container="true"><a href="/@${owner}/post/${prefix}${part}"><time datetime="2026-09-19T04:00:00Z"></time></a>${detail?badge(part,n):''}<div class="${detail?'xqti54a x49hn82 xcrlgei x889kno':'x1xdureb xkbb5z'} x13vxnyz"><div><div class="x1a6qonq"><div><span dir="auto">${prefix} ${part} 본문${detail?'':badge(part,n)}</span></div></div><div><button>좋아요</button></div></div></div></div>`;
   const region=html=>`<main data-column-scrollable role="region">${html}</main>`;
@@ -24,6 +28,11 @@ function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,
       .replace('</a><div class="x1xdureb',`</a>${badge(2,total)}<div class="x1xdureb`)
       .replace(`<div class="x1a6qonq"><div><span dir="auto">A 2 본문${badge(2,total)}</span></div></div>`,
         `<div><a href="/@sample/post/A2/media"><img alt="첫 사진"></a><a href="/@sample/post/A2/media"><img alt="둘째 사진"></a></div>`);
+    if(profileExtrasA) {
+      const add=(html,part)=>html.replace(`${badge(part,total)}</span>`, `<a href="${previewHref(part)}">example.org/article…</a>${badge(part,total)}</span>`)
+        .replace('<div><button>', `${profileExtrasA[part-1] || ''}<div><button>`);
+      first=add(first,1);second=add(second,2);
+    }
     return region((profileCompleteA?'<div data-virtualized="true">':'')+first+(delayedProfileSecondA?'':second)
       +(profileCompleteA?'</div>':'')+row('B',1,3)+row('B',2,3));
   };
@@ -221,6 +230,40 @@ test('a profile group with photo buttons saves both parts and continues without 
     assert.ok(!h.events.includes('open:A'));
     assert.ok(h.events.includes('open:B'));
   }finally{h.stop();}
+});
+
+for(const [description,extras,noteTypes] of [
+  ['unavailable quoted content',[unavailableContent,''],['unavailable-content',null]],
+  ['external previews with and without a thumbnail',[linkPreview(1,true),linkPreview(2)],['link-preview','link-preview']],
+])test(`a same-profile chain with ${description} retains both bodies without opening detail`,async()=>{
+  const h=harness({total:2,profileCompleteA:true,profileExtrasA:extras});
+  try {
+    await h.advance(20);
+    const report=h.messages.find(m=>m.type==='chain'&&m.chain.rootId==='/@sample/post/A1'&&m.chain.status==='complete');
+    assert.equal(report?.chain.completedFrom,'profile');
+    assert.deepEqual(report.chain.members.map(member=>member.part),[1,2]);
+    assert.ok(!h.events.includes('open:A'),'readable numbered bodies should not trigger an unnecessary detail visit');
+    const cards=h.messages.find(m=>m.type==='snapshot').page.cards;
+    for(let part=1;part<=2;part++) {
+      const card=cards.find(c=>c.id===`/@sample/post/A${part}`);
+      assert.ok(card.text.startsWith(`A ${part} 본문`));
+      assert.deepEqual(card.issues,[]);
+      if(noteTypes[part-1]) assert.equal(card.notes[0].type,noteTypes[part-1]);
+    }
+    assert.ok(h.events.includes('open:B'));
+  } finally { h.stop(); }
+});
+
+test('unknown extra content still receives a bounded detail visit rather than false profile completion',async()=>{
+  const h=harness({total:2,profileCompleteA:true,profileExtrasA:['<div><button>지원하지 않는 첨부</button></div>','']});
+  try {
+    await h.advance(20);
+    assert.ok(h.events.includes('open:A'));
+    const reports=h.messages.filter(m=>m.type==='chain'&&m.chain.rootId==='/@sample/post/A1');
+    assert.ok(!reports.some(m=>m.chain.completedFrom==='profile'));
+    assert.ok(reports.some(m=>m.chain.completedFrom==='detail'||m.chain.status==='complete'));
+    assert.ok(h.events.includes('open:B'));
+  } finally { h.stop(); }
 });
 test('does not open a detail page before the profile snapshot is committed',async()=>{
   const h=harness({holdSnapshot:true});await flush();

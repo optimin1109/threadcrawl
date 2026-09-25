@@ -10,6 +10,102 @@ const identity = {tabId: 7, runId: 'first-run'};
 const completeChain = cards => ({rootId: cards[0].id, total: cards.length, status: 'complete',
   members: cards.map((item, index) => ({part: index + 1, id: item.id})), missing: [], reason: null});
 
+const allRecords = store => store.transaction('readonly', async stores => Object.fromEntries(await Promise.all(
+  Object.entries(stores).map(async ([name, objectStore]) => [name, await new Promise((resolve, reject) => {
+    const reading = objectStore.getAll(); reading.onsuccess = () => resolve(reading.result); reading.onerror = () => reject(reading.error);
+  })]))));
+
+async function seedResetCapture(store, account = 'tester', runId = identity.runId) {
+  const run = {tabId: 7, runId};
+  await store.start(account, run.tabId, run.runId);
+  const item = {...card('one'), id: `/@${account}/post/one`, label: '1/1'};
+  await store.append({...page(item), account, issues: [{id: item.id, reason: '보존할 진단'}]}, run);
+  await store.recordChain(completeChain([item]), run);
+  await store.finish('중단', '사용자 중지', run);
+  return {account, runId};
+}
+
+test('계정 초기화는 해당 계정의 모든 기록과 실행만 지우고 다른 계정 및 다운로드 원본은 보존한다', async () => {
+  const indexedDB = new IDBFactory();
+  const store = new CaptureStore({indexedDB});
+  try {
+    await seedResetCapture(store, 'other', 'other-run');
+    const beforeOther = await allRecords(store);
+    const target = await seedResetCapture(store);
+    const downloaded = await store.exportCapture();
+    assert.equal((await store.resetCapture(target)).ok, true);
+    assert.equal((await store.status()).capture, null);
+    assert.equal((await store.status()).running, false);
+    assert.equal((await store.status()).navigation, null);
+    assert.equal(await store.getControl(), undefined);
+    assert.equal(await store.exportCapture(), null);
+    assert.deepEqual(await store.getChains(), []);
+    const after = await allRecords(store);
+    for (const name of ['captures', 'cards', 'issues', 'chains']) assert.deepEqual(after[name], beforeOther[name], name);
+    assert.deepEqual(after.control, []);
+    assert.equal(downloaded.cards.length, 1);
+    assert.equal(downloaded.chains.length, 1);
+    await store.close();
+    const reopened = new CaptureStore({indexedDB});
+    try {
+      assert.equal((await reopened.status()).capture, null);
+      await reopened.start('tester', 7, 'new-run');
+      const fresh = await reopened.exportCapture();
+      assert.deepEqual(fresh.cards, []); assert.deepEqual(fresh.chains, []); assert.deepEqual(fresh.issues, []);
+      assert.equal(fresh.snapshots, 0); assert.notEqual(fresh.sessionId, downloaded.sessionId);
+    } finally { await reopened.close(); }
+  } finally { await store.close(); }
+});
+
+test('초기화 중 일부 저장소 삭제가 실패하면 앞선 삭제와 실행 정보까지 함께 복구한다', async () => {
+  const store = new CaptureStore({indexedDB: new IDBFactory()});
+  try {
+    const target = await seedResetCapture(store), before = await allRecords(store);
+    const transaction = store.transaction.bind(store);
+    store.transaction = (mode, work) => transaction(mode, stores => {
+      stores.issues.delete = () => { throw new Error('초기화 삭제 실패'); };
+      return work(stores);
+    });
+    await assert.rejects(store.resetCapture(target), /초기화 삭제 실패/);
+    store.transaction = transaction;
+    assert.deepEqual(await allRecords(store), before);
+  } finally { await store.close(); }
+});
+
+test('진행 중 또는 확인한 계정·실행이 바뀐 초기화는 자료를 지우지 않는다', async () => {
+  const store = new CaptureStore({indexedDB: new IDBFactory()});
+  try {
+    const target = await seedResetCapture(store);
+    await store.start('tester', 7, 'new-run');
+    const running = await allRecords(store);
+    await assert.rejects(store.resetCapture({account: 'tester', runId: 'new-run'}), /먼저 중지/);
+    assert.deepEqual(await allRecords(store), running);
+    await store.finish('중단', '사용자 중지', {tabId: 7, runId: 'new-run'});
+    const stopped = await allRecords(store);
+    await assert.rejects(store.resetCapture(target), /대상이 바뀌/);
+    await assert.rejects(store.resetCapture({account: 'other', runId: 'new-run'}), /대상이 바뀌/);
+    assert.deepEqual(await allRecords(store), stopped);
+  } finally { await store.close(); }
+});
+
+test('초기화 뒤 도착한 이전 수집 메시지는 기록을 되살리지 않고 재시작한 새 실행도 바꾸지 않는다', async () => {
+  const store = new CaptureStore({indexedDB: new IDBFactory()});
+  try {
+    const target = await seedResetCapture(store);
+    const late = async () => {
+      assert.equal((await store.append(page(card('late')), identity)).ok, false);
+      assert.equal((await store.recordChain(completeChain([{...card('late'), label: '1/1'}]), identity)).ok, false);
+      assert.equal((await store.checkpoint({mode: 'profile', profilePath: '/@tester'}, identity)).ok, false);
+      assert.equal((await store.finish('불완전', '늦은 종료', identity)).ok, false);
+    };
+    await store.resetCapture(target); await late();
+    assert.equal(await store.exportCapture(), null);
+    await store.start('tester', 7, 'new-run'); await late();
+    assert.equal((await store.status()).running, true);
+    assert.deepEqual((await store.exportCapture()).cards, []);
+  } finally { await store.close(); }
+});
+
 async function legacyCompletedCapture() {
   const indexedDB = new IDBFactory();
   const cards = ['bad1', 'bad2', 'good1', 'good2'].map((id, index) => ({...card(id), label: `${index % 2 + 1}/2`}));
@@ -188,6 +284,34 @@ test('기존 이미지 경고를 해소하고 같은 본문의 뒤늦은 미디�
   assert.match(exportCaptureMarkdown(capture),/이미지.*저장하지/);
   assert.match(exportCaptureMarkdown(capture),/장소 태그: 장소/);
   await store.close();
+});
+
+test('기존 첨부 경고를 재확인한 안내·링크 미리보기로 해소하면 원문과 메타데이터를 보존해 연속글을 완료한다', async () => {
+  const store = new CaptureStore({indexedDB: new IDBFactory()});
+  try {
+    await store.start('tester', 7, identity.runId);
+    const cards = [{...card('first', '첫 번째 작성자 본문'), label: '1/2'},
+      {...card('second', '두 번째 작성자 본문 https://example.com/article?id=42'), label: '2/2'}];
+    const initial = cards.map(item => ({...item, issues: [{id: item.id, reason: '첨부/설문/본문 뒤 구조 미검증'}]}));
+    await store.append(page(...initial), identity);
+    await store.recordChain(completeChain(cards), identity);
+    assert.equal((await store.status()).capture.completedChainCount, 0);
+    assert.deepEqual((await store.getChains())[0].missing, [1, 2]);
+    const verified = cards.map((item, index) => ({...item, notes: index === 0
+      ? [{type: 'unavailable-content', text: '이용할 수 없는 게시물'}]
+      : [{type: 'link-preview', url: 'https://example.com/article?id=42', domain: 'example.com', title: '기사 제목'}]}));
+    await store.append(page(...verified), identity);
+    await store.recordChain(completeChain(cards), identity);
+    const capture = JSON.parse(JSON.stringify(await store.exportCapture()));
+    for (const [index, item] of capture.cards.entries()) {
+      assert.equal(item.text, cards[index].text); assert.equal(item.label, cards[index].label);
+      assert.deepEqual(item.issues, []); assert.deepEqual(item.notes, verified[index].notes);
+    }
+    assert.equal(capture.chains[0].status, 'complete');
+    assert.deepEqual(capture.chains[0].missing, []);
+    assert.equal((await store.status()).capture.completedChainCount, 1);
+    assert.equal((await store.status()).capture.incompleteChainCount, 0);
+  } finally { await store.close(); }
 });
 
 test('확정한 게시물과 긴 첨부는 저장소를 다시 열어도 남고 상태 조회에는 본문을 싣지 않는다', async () => {

@@ -171,6 +171,73 @@ test('목록에서 확보한 연속글과 미저장 이미지·장소를 명확�
   assert.deepEqual(textBlocks(output),cards.map(c=>c.text));
 });
 
+test('사라진 인용·링크 미리보기는 본문과 구분하며 번호별 본문 확보를 취소하지 않는다', () => {
+  const cards = [1, 2].map(n => card({
+    id: `/@hongso0921/post/Preview${n}`, label: `${n}/2`, text: `  본문 ${n}\r\n\n끝  `,
+  }));
+  cards[0].notes = [{ type: 'unavailable-content', text: '이용할 수 없는 게시물' }];
+  cards[1].notes = [{ type: 'link-preview', url: 'https://news.example/article?id=42', domain: 'news.example', title: '화면에 표시된 제목' }];
+  const input = capture(cards, { chains: [{
+    rootId: cards[0].id, total: 2, status: 'complete', completedFrom: 'profile',
+    members: cards.map((item, i) => ({ part: i + 1, id: item.id })), missing: [],
+  }] });
+  const before = JSON.stringify(input);
+  const output = exportCaptureMarkdown(input);
+  assert.deepEqual(textBlocks(output), cards.map(item => item.text));
+  assert.match(output, /연속글 2\/2 확보 · 완료/);
+  assert.match(output, /확보한 카드 2개 · 첨부 0개/);
+  assert.match(output, /인용·연결된 원문은 이용할 수 없어 저장하지 못했습니다/);
+  assert.match(output, /화면 안내: 이용할 수 없는 게시물/);
+  assert.match(output, /링크 미리보기: 화면에 표시된 제목/);
+  assert.match(output, /표시 도메인: news\.example/);
+  assert.ok(output.includes('[외부 링크](https://news.example/article?id=42)'));
+  assert.match(output, /외부 원문 전문과 미리보기 이미지는 저장하지 않았습니다/);
+  assert.match(output, /이용할 수 없는 인용·연결된 원문을 저장했다는 뜻은 아닙니다/);
+  assert.doesNotMatch(output, /^### 긴 첨부/gm);
+  assert.equal(JSON.stringify(input), before);
+});
+
+test('미리보기 메타데이터를 이스케이프하고 HTTP 링크의 괄호를 안전하게 출력한다', () => {
+  const injected = '[외부](https://evil.example)\n# 가짜 제목 <img src=x>';
+  const output = exportCaptureMarkdown(capture([card({ notes: [
+    { type: 'unavailable-content', text: injected },
+    { type: 'link-preview', url: 'http://news.example/a(b)[c]?q=(d)#end(e)', domain: injected, title: injected },
+  ] })]));
+  assert.deepEqual(textBlocks(output), ['확보한 본문']);
+  assert.doesNotMatch(outsideText(output), /^# 가짜 제목|<img src=x>|\]\(https:\/\/evil\.example\)/m);
+  assert.ok(output.includes('[외부 링크](http://news.example/a%28b%29%5Bc%5D?q=%28d%29#end%28e%29)'));
+});
+
+test('IPv6 외부 링크의 주소 괄호는 보존하고 경로·쿼리·프래그먼트 괄호만 인코딩한다', () => {
+  const url = 'https://[2001:db8::1]:8443/a(b)[c]?q=[d]#end(e)';
+  const output = exportCaptureMarkdown(capture([card({ notes: [
+    { type: 'link-preview', url, domain: '[2001:db8::1]', title: 'IPv6 링크' },
+  ] })]));
+  const target = output.match(/\[외부 링크\]\(([^)]+)\)/)?.[1];
+  assert.ok(target, '외부 링크가 있어야 합니다.');
+  assert.equal(new URL(target).origin, new URL(url).origin);
+  assert.equal(target, 'https://[2001:db8::1]:8443/a%28b%29%5Bc%5D?q=%5Bd%5D#end%28e%29');
+});
+
+test('미리보기의 위험한 URL·인증정보·제어문자는 링크로 만들지 않는다', () => {
+  const invalidUrls = [
+    'javascript:alert(1)', 'data:text/html,<h1>bad</h1>', '//news.example/article',
+    'https://reader:password@news.example/article', 'https://reader@news.example/article',
+    'https://news.example/\narticle', 'https://news.example/\tarticle',
+    'https://news.example/\u0000article', 'https://news.example/\u007farticle',
+    'https:\\news.example\\article',
+  ];
+  const input = capture([card({ notes: invalidUrls.map(url => ({
+    type: 'link-preview', url, domain: 'news.example', title: '검증하지 못한 미리보기',
+  })) })]);
+  const before = structuredClone(input);
+  const output = exportCaptureMarkdown(input);
+  assert.equal((output.match(/외부 링크 URL 미확인/g) || []).length, invalidUrls.length);
+  assert.doesNotMatch(outsideText(output), /\[외부 링크\]\(/);
+  assert.ok(textBlocks(output).includes('확보한 본문'));
+  assert.deepEqual(input, before);
+});
+
 test('빠진 중간 번호와 충돌 사유는 연속글 경고로 남긴다', () => {
   const cards = [1, 3].map(n => card({ id: `/@hongso0921/post/Chain${n}`, label: `${n}/3`, text: `확보 ${n}` }));
   const output = exportCaptureMarkdown(capture(cards, { chains: [{ rootId: cards[0].id, total: 3, status: 'incomplete', members: cards.map((item, i) => ({ part: i ? 3 : 1, id: item.id })), missing: [2], reason: '2번 본문 미확보' }] }));

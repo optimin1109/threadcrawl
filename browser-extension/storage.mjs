@@ -95,6 +95,23 @@ export class CaptureStore {
     });
   }
   async getControl() { return this.transaction('readonly', stores => request(stores.control.get('active'))); }
+  async resetCapture(expected = {}) {
+    return this.transaction('readwrite', async stores => {
+      const control = await request(stores.control.get('active'));
+      if (control?.running) throw new Error('수집 중에는 초기화할 수 없습니다. 먼저 중지하세요.');
+      if (!control || control.account !== expected.account || control.runId !== expected.runId)
+        throw new Error('초기화 대상이 바뀌었습니다. 팝업에서 계정을 다시 확인하세요.');
+      // Delete every account-owned row and its old run identity atomically, so
+      // late collector messages cannot restore a partially reset capture.
+      stores.captures.delete(control.account);
+      for (const name of ['cards', 'issues', 'chains']) {
+        const keys = await request(stores[name].index('account').getAllKeys(control.account));
+        for (const key of keys) stores[name].delete(key);
+      }
+      stores.control.delete('active');
+      return {ok: true};
+    });
+  }
   async checkpoint(navigation, identity) {
     return this.transaction('readwrite', async stores => {
       const control = await request(stores.control.get('active'));
@@ -166,6 +183,7 @@ export class CaptureStore {
       const control = await request(stores.control.get('active'));
       const capture = control ? await this.validatedMeta(stores, control.account) : null;
       return {capture: capture ? {chainCount: 0, completedChainCount: 0, incompleteChainCount: 0, ...capture} : null,
+        resetRunId: control?.runId ?? null,
         running: Boolean(control?.running), navigation: control?.navigation ?? (control ? initialNavigation(control.account) : null)};
     });
   }

@@ -19,6 +19,9 @@ const attachment = (text, path = id) => `<div><a href="${path}/media"><div><div>
 const photoButton = '<div role="button" tabindex="0"><div><picture><img alt=""></picture></div></div>';
 const panoramaButton = '<button aria-label="미디어를 파노라마로 결합" type="button"></button>';
 const photoCarousel = `<div><div>${photoButton}</div>${panoramaButton}<div>${photoButton}</div></div>`;
+const unavailablePost = '<div class="x9f619 xh8yej3 x1c1uobl xyri2b x14vqqas"><div><span dir="auto">이용할 수 없는 게시물</span></div></div>';
+const previewHref = 'https://l.threads.com/?u=https%3A%2F%2Fexample.com%2Farticle%3Fid%3D42&amp;e=tracking';
+const linkPreview = (image = true, href = previewHref) => `<div class="x1e56ztr xw7yly9 x1j9u4d2"><a role="link" tabindex="0" target="_blank" rel="nofollow noreferrer" href="${href}"><div>${image ? '<img src="https://cdn.example/image.jpg" alt="">' : ''}<div><div class="xcrlgei"><div><svg><path d="M0 0"></path></svg><span dir="auto" translate="no"><span>example.com</span></span></div><div class="x1gslohp"><span dir="auto"><span>기사 제목</span></span></div></div></div></div></a></div>`;
 
 test('keeps the whole long attachment, whitespace and caption independently', () => {
   const long = '첫 문단\n\n' + '긴 글 😀 '.repeat(1500) + '\n 마지막 문장  ';
@@ -45,6 +48,72 @@ test('unknown extra content is reported instead of silently lost', () => {
   const card = read('<div>알 수 없는 첨부</div>').cards[0];
   assert.equal(card.text, '소개글');
   assert.ok(card.issues.length);
+});
+
+test('an observed unavailable-post notice does not discard the readable numbered caption', () => {
+  const card = read(unavailablePost, '작성자 본문&nbsp;<div class="x1rg5ohu"><span>1</span><span>/</span><span>2</span></div>').cards[0];
+  assert.equal(card.text, '작성자 본문');
+  assert.equal(card.label, '1/2');
+  assert.deepEqual(card.issues, []);
+  assert.deepEqual(card.notes, [{type:'unavailable-content',text:'이용할 수 없는 게시물'}]);
+  assert.deepEqual(card.attachments, []);
+});
+
+test('unavailable-post words cannot hide another attachment structure or extra content', () => {
+  for (const extra of [
+    '<div>이용할 수 없는 게시물</div>',
+    unavailablePost.replace('이용할 수 없는 게시물', '이용할 수 없는 게시물 추가 본문'),
+    unavailablePost.replace('</span>', '</span><button>더 보기</button>'),
+    unavailablePost.replace('</span>', '</span><a href="/@other/post/Other">다른 글</a>'),
+    unavailablePost.replace('</span>', '</span><img>'),
+    unavailablePost.replace('<div><span', '<div role="button"><span'),
+  ]) {
+    const card = read(extra).cards[0];
+    assert.ok(card.issues.length, extra);
+    assert.equal(card.notes?.some(note => note.type === 'unavailable-content') || false, false, extra);
+  }
+});
+
+test('observed external link previews preserve metadata separately from the numbered caption', () => {
+  for (const image of [true, false]) {
+    const card = read(linkPreview(image), `작성자 본문 <a href="${previewHref}">https://example.com/article?id=42</a>&nbsp;<div class="x1rg5ohu"><span>2</span><span>/</span><span>2</span></div>`).cards[0];
+    assert.equal(card.text, '작성자 본문 https://example.com/article?id=42');
+    assert.equal(card.label, '2/2');
+    assert.deepEqual(card.issues, []);
+    assert.deepEqual(card.notes, [{type:'link-preview',url:'https://example.com/article?id=42',domain:'example.com',title:'기사 제목'}]);
+    assert.deepEqual(card.attachments, []);
+    assert.doesNotMatch(JSON.stringify(card.notes), /cdn\.example|tracking|l\.threads\.com/);
+  }
+});
+
+test('external preview metadata cannot conceal unsafe URLs or unsupported extra content', () => {
+  for (const extra of [
+    linkPreview(false, 'https://l.threads.com/?u=javascript%3Aalert%281%29'),
+    linkPreview(false, 'https://l.threads.com/?u=data%3Atext%2Fhtml%2Cbad'),
+    linkPreview(false, 'https://l.threads.com/?u=https%3A%2F%2Fuser%3Apass%40example.com%2F'),
+    linkPreview(false, 'https://l.threads.com/?u=https%3Aexample.com%2Farticle'),
+    linkPreview(false, 'https://l.threads.com/?u=https%3A%5C%5Cexample.com%2Farticle'),
+    linkPreview(false, 'https://l.threads.com/?u=https%3A%2F%2Fexample.com%2F%7Farticle'),
+    linkPreview(false, 'https://l.threads.com/?u=https%3A%2F%2Fexample.com%2F%C2%85article'),
+    linkPreview(false, previewHref.replace('l.threads.com', 'l.thr\neads.com')),
+    linkPreview(false, previewHref.replace('https://', 'https:\\\\')),
+    linkPreview(false, `${previewHref}&amp;tracking=\u007f`),
+    linkPreview(false, 'https://l.threads.com/?u=https%3A%2F%2Fexample.com%2F&amp;u=https%3A%2F%2Fother.example%2F'),
+    linkPreview(false).replace('</a>', '</a><a href="https://other.example/">추가 링크</a>'),
+    linkPreview(false).replace('기사 제목', '기사 제목<button>더 보기</button>'),
+    linkPreview(false).replace('기사 제목', '기사 제목<video></video>'),
+    linkPreview(false).replace('기사 제목', '기사 제목<input type="radio">'),
+    linkPreview(false).replace('기사 제목', '기사 제목<div data-pressable-container="true"></div>'),
+    linkPreview(false).replace('</a>', '</a>추가 본문'),
+    linkPreview(false).replace('class="xcrlgei"', 'class="unknown-layout"'),
+    linkPreview(false).replace('class="xcrlgei"', 'class="xcrlgei" contenteditable="true"'),
+    linkPreview(false).replace('class="xcrlgei"', 'class="xcrlgei" role="link"'),
+    linkPreview(false).replace('class="xcrlgei"', 'class="xcrlgei" tabindex="0"'),
+  ]) {
+    const card = read(extra).cards[0];
+    assert.ok(card.issues.length, extra);
+    assert.equal(card.notes?.some(note => note.type === 'link-preview') || false, false, extra);
+  }
 });
 
 test('observed image and location siblings do not invalidate a fully read caption', () => {
