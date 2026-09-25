@@ -10,7 +10,7 @@ const captured = () => ({running: false, resetRunId: 'confirmed-run', capture: {
 }});
 const settled = () => new Promise(resolve => setImmediate(resolve));
 
-async function popup({status = captured(), confirmed = true, resetError = null} = {}) {
+async function popup({status = captured(), confirmed = true, resetError = null, repairError = null} = {}) {
   const dom = new JSDOM(html, {runScripts: 'outside-only'}), sent = [], confirmations = [];
   const state = {status};
   dom.window.chrome = {runtime: {sendMessage: async message => {
@@ -19,6 +19,12 @@ async function popup({status = captured(), confirmed = true, resetError = null} 
     if (message.type === 'reset') {
       if (resetError) return {error: resetError};
       state.status = {capture: null, running: false, resetRunId: null}; return {ok: true};
+    }
+    if (message.type === 'repair') {
+      if (repairError) return {error: repairError};
+      state.status = {...state.status, running: true,
+        navigation: {workflow: 'repair', repairQueue: ['/@tester/post/one'], repairIndex: 0}};
+      return {ok: true};
     }
     return {ok: true};
   }}};
@@ -71,4 +77,78 @@ test('초기화 확인 취소와 서버 거부는 기존 기록과 계속하기 
       if (options.resetError) assert.match(ui.dom.window.document.getElementById('message').textContent, /초기화 대상이 바뀌/);
     } finally { ui.dom.window.close(); }
   }
+});
+
+test('미완료 글 재수집은 멈춘 계정에 미완료 묶음이 있을 때만 제공한다', async () => {
+  const pending = {...captured(), capture: {...captured().capture, chainCount: 5, completedChainCount: 3}};
+  for (const status of [pending, {...pending, running: true}, captured(),
+    {...pending, capture: {...pending.capture, completedChainCount: 5}}, {capture: null, running: false}]) {
+    const ui = await popup({status});
+    try {
+      assert.ok(ui.button('repair'), '미완료 글 재수집 버튼이 있어야 합니다.');
+      assert.equal(ui.button('repair').textContent, '미완료 글만 다시 수집');
+      assert.equal(ui.button('repair').disabled, status !== pending);
+      assert.equal(ui.button('start').textContent, status.capture ? '이 계정 수집 계속하기' : '이 계정 수집 시작');
+      if (status.capture) {
+        const help = ui.dom.window.document.getElementById('repairHelp').textContent;
+        assert.match(help, /@tester.*미완료/);
+        assert.match(help, /@tester.*프로필.*탭/);
+        assert.match(help, /저장된 글.*보존/);
+      }
+    } finally { ui.dom.window.close(); }
+  }
+});
+
+test('미완료 글 재수집은 확인한 계정·실행으로 전용 요청만 보내며 삭제 확인이나 일반 시작을 하지 않는다', async () => {
+  const status = {...captured(), capture: {...captured().capture, chainCount: 2, completedChainCount: 1}};
+  const ui = await popup({status, confirmed: false});
+  try {
+    assert.ok(ui.button('repair'));
+    ui.button('repair').click(); await settled();
+    assert.deepEqual(ui.sent.filter(item => item.type !== 'status'), [{type: 'repair', account: 'tester', runId: 'confirmed-run'}]);
+    assert.equal(ui.confirmations.length, 0);
+    assert.equal(ui.button('repair').disabled, true);
+    assert.equal(ui.button('stop').disabled, false);
+    assert.equal(ui.state.status.capture.cardCount, 3);
+  } finally { ui.dom.window.close(); }
+});
+
+test('미완료 글 재수집은 전체 진행과 현재 묶음의 확보·누락 번호를 함께 표시한다', async () => {
+  const status = {...captured(), running: true, navigation: {
+    workflow: 'repair', repairQueue: ['/@tester/post/one', '/@tester/post/two', '/@tester/post/three'], repairIndex: 1,
+    activeChain: {total: 3, members: [{part: 2, id: '/@tester/post/part2'}], missing: [1, 3]},
+  }};
+  const ui = await popup({status});
+  try {
+    const text = ui.dom.window.document.getElementById('message').textContent;
+    assert.match(text, /미완료 글 재수집: 2\/3묶음/);
+    assert.match(text, /현재 연속글: 1\/3개 확보 · 남은 번호 1, 3/);
+  } finally { ui.dom.window.close(); }
+});
+
+test('저장 응답에 과거 관계가 남아도 미확보 번호를 현재 확보 개수에 포함하지 않는다', async () => {
+  const status = {...captured(), running: true, navigation: {
+    workflow: 'repair', repairQueue: ['/@tester/post/one'], repairIndex: 0,
+    activeChain: {total: 2, members: [{part: 1, id: '/@tester/post/one'}, {part: 2, id: '/@tester/post/two'}], missing: [1]},
+  }};
+  const ui = await popup({status});
+  try {
+    const text = ui.dom.window.document.getElementById('message').textContent;
+    assert.match(text, /현재 연속글: 1\/2개 확보 · 남은 번호 1/);
+    assert.doesNotMatch(text, /현재 연속글: 2\/2개 확보/);
+  } finally { ui.dom.window.close(); }
+});
+
+test('미완료 재수집 대상이나 탭이 바뀌어 거부되면 기존 자료와 재시도 버튼을 보존한다', async () => {
+  const status = {...captured(), capture: {...captured().capture, chainCount: 2, completedChainCount: 1}};
+  const ui = await popup({status, repairError: '대상 계정의 프로필 또는 글 탭을 여세요.'});
+  try {
+    assert.ok(ui.button('repair'));
+    ui.button('repair').click(); await settled();
+    assert.match(ui.dom.window.document.getElementById('message').textContent, /대상 계정의 프로필/);
+    assert.equal(ui.button('repair').disabled, false);
+    assert.equal(ui.button('save').disabled, false);
+    assert.equal(ui.confirmations.length, 0);
+    assert.deepEqual(ui.state.status, status);
+  } finally { ui.dom.window.close(); }
 });

@@ -141,6 +141,48 @@ test('a missing middle part stays incomplete even after the final part is read',
   assert.match(result.reason, /5/);
 });
 
+test('a stored member marked missing cannot supply an unread or unverified body during repair', () => {
+  const saved = { ...chain(2), status: 'incomplete',
+    members: [{ part: 1, id: id(1) }, { part: 2, id: id(2) }], missing: [1] };
+  const original = structuredClone(saved);
+  for (const cards of [[], [row(2, 2)], [row(1, 2, { issues: [{ reason: '본문 구조 미확인' }] }), row(2, 2)]]) {
+    const result = plain(observe(saved, detail(cards)));
+    assert.equal(result.status, 'incomplete');
+    assert.deepEqual(result.missing, [1]);
+    assert.deepEqual(result.members, [{ part: 2, id: id(2) }]);
+  }
+  assert.deepEqual(saved, original);
+});
+
+test('a delayed clean body fills a stored missing number even after a save response restores historical members', () => {
+  const historicalMembers = [{ part: 1, id: id(1) }, { part: 2, id: id(2) }];
+  const saved = { ...chain(2), status: 'incomplete', members: historicalMembers, missing: [1] };
+  const first = plain(observe(saved, detail([row(2, 2)])));
+  // Storage retains known relationships while marking unverified bodies missing.
+  const acknowledged = { ...first, members: historicalMembers, missing: [1] };
+  const waiting = plain(observe(acknowledged, detail([row(2, 2)])));
+  assert.equal(waiting.status, 'incomplete');
+  assert.deepEqual(waiting.missing, [1]);
+  const completed = plain(observe(waiting, detail([row(1, 2)])));
+  assert.equal(completed.status, 'complete');
+  assert.deepEqual(completed.missing, []);
+  assert.deepEqual(completed.members, historicalMembers);
+});
+
+test('filtering stored missing members preserves numbering and relationship conflicts', () => {
+  const conflicts = [{ part: 2, ids: [id(2), '/@sample/post/OtherSecond'] }];
+  const saved = { ...chain(2), status: 'incomplete',
+    members: [{ part: 1, id: id(1) }, { part: 2, id: id(2) }], missing: [2],
+    conflicts, conflictDetected: true, reason: '연속글 번호·관계 충돌' };
+  const original = structuredClone(saved);
+  const result = plain(observe(saved, detail([row(1, 2), row(2, 2)])));
+  assert.equal(result.status, 'incomplete');
+  assert.deepEqual(result.missing, [2]);
+  assert.deepEqual(result.conflicts, conflicts);
+  assert.equal(result.conflictDetected, true);
+  assert.deepEqual(saved, original);
+});
+
 test('profile rows and another detail root cannot update a chain', () => {
   const initial = chain(3);
   const cards = [row(1, 3), row(2, 3), row(3, 3)];

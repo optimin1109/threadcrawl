@@ -7,21 +7,183 @@ import {createMessageHandler} from '../browser-extension/background.mjs';
 function environment() {
   let config, connected = true, closed = false, running = true;
   const tab = {id: 7, url: 'https://www.threads.com/@tester', status: 'complete', discarded: false, frozen: false};
-  const calls = [];
+  const calls = [], updates = [];
   const chrome = {
     runtime: {id: 'test-extension', getURL: path => `chrome-extension://test-extension/${path}`},
-    tabs: {query: async () => [tab], get: async () => {if(closed)throw new Error('No tab with id: 7');return {...tab};}, sendMessage: async (_tab, message) => {
+    tabs: {query: async () => [tab], get: async () => {if(closed)throw new Error('No tab with id: 7');return {...tab};},
+      update: async (tabId, changes) => {updates.push({tabId, ...changes});tab.pendingUrl = changes.url;tab.status = 'loading';return {...tab};}, sendMessage: async (_tab, message) => {
       if (!connected) throw new Error('tab gone');
       return message.type === 'ping' ? {running, runId: config?.runId, reason: running ? null : '시간 상한 도달'} : {ok: true};
     }},
     scripting: {executeScript: async options => {calls.push(options); if (options.args) config = options.args[0];}},
   };
-  return {chrome, calls, tab, disconnect: () => {connected = false;}, connect: () => {connected = true;}, stopContent: () => {running = false;}, close: () => {closed = true;}, config: () => config};
+  return {chrome, calls, updates, tab, arrive: () => {tab.url = tab.pendingUrl;delete tab.pendingUrl;tab.status = 'complete';}, disconnect: () => {connected = false;}, connect: () => {connected = true;}, stopContent: () => {running = false;}, close: () => {closed = true;}, config: () => config};
 }
 const page = {version: 2, adapter: 'threads-dom-2026-09-19', account: 'tester', capturedAt: '2026-09-19T01:00:00Z', issues: [], blocked: false,
   cards: [{id: '/@tester/post/one', timestamp: '2026-09-19T00:00:00Z', text: '확정된 글', label: null, groupIds: [], issues: [], context: 'threads', attachments: []}]};
 
 const popupSender = {id: 'test-extension', url: 'chrome-extension://test-extension/popup.html'};
+
+const repairPart = (root, part) => ({...page.cards[0], id: `/@tester/post/${root}${part}`, label: `${part}/2`});
+const repairChain = (root, status = 'incomplete', parts = [1]) => ({rootId: `/@tester/post/${root}1`, total: 2,
+  status, members: parts.map(part => ({part, id: `/@tester/post/${root}${part}`})), missing: parts.includes(2) ? [] : [2], reason: status === 'incomplete' ? '2번 미확인' : null});
+async function savedRepair(store) {
+  const identity = {tabId: 7, runId: 'old-run'};
+  await store.start('tester', identity.tabId, identity.runId);
+  await store.append({...page, cards: [repairPart('A', 1), repairPart('B', 1), repairPart('C', 1), repairPart('C', 2)]}, identity);
+  for (const chain of [repairChain('A'), repairChain('B', 'pending'), repairChain('C', 'complete', [1, 2])]) await store.recordChain(chain, identity);
+  await store.finish('중단', '사용자 중지', identity);
+  return {type: 'repair', account: 'tester', runId: identity.runId};
+}
+
+test('미완료 재수집은 저장한 첫 글만 직접 열고 저장 확인 후 다음 글로 이동하며 프로필에서 종료한다', async () => {
+  const store = new CaptureStore({indexedDB: new IDBFactory()}), env = environment();
+  let time = 1000;
+  const send = createMessageHandler({store, chrome: env.chrome, now: () => time});
+  try {
+    const repair = await savedRepair(store);
+    assert.equal((await send(repair, popupSender)).ok, true);
+    assert.deepEqual(env.updates.map(item => item.url), ['https://www.threads.com/@tester/post/A1']);
+    assert.equal(env.calls.length, 0, 'do not inject a detail collector into the departure profile');
+    assert.equal((await send({type: 'status'})).running, true);
+    const queued = (await store.getControl()).navigation;
+    assert.equal(queued.workflow, 'repair'); assert.deepEqual(queued.repairQueue, ['/@tester/post/A1', '/@tester/post/B1']);
+    assert.equal(queued.repairIndex, 0);
+    env.arrive(); env.tab.url += '?xmt=synthetic'; await send.onUpdated(7, {status: 'complete'}, {...env.tab});
+    const first = env.config();
+    assert.equal(first.navigation.activeChain.rootId, '/@tester/post/A1');
+    assert.equal(first.startedAt, 1000);
+    const next = {type: 'repair-next', rootId: '/@tester/post/A1', runId: first.runId};
+    assert.equal((await send(next, {tab: {id: 7}})).ok, false, 'a saved previous failure is not this run completion');
+    await send({type: 'snapshot', runId: first.runId, page: {...page, view: 'detail', cards: [repairPart('A', 1), repairPart('A', 2)]}}, {tab: {id: 7}});
+    await send({type: 'chain', runId: first.runId, chain: repairChain('A', 'complete', [1, 2])}, {tab: {id: 7}});
+    await send({type: 'checkpoint', runId: first.runId, navigation: {...first.navigation, mode: 'returning'}}, {tab: {id: 7}});
+    assert.equal((await send(next, {tab: {id: 8}})).ok, false);
+    assert.equal((await send({...next, rootId: '/@tester/post/B1'}, {tab: {id: 7}})).ok, false);
+    time = 6000;
+    assert.equal((await send(next, {tab: {id: 7}})).ok, true);
+    assert.equal((await send(next, {tab: {id: 7}})).ok, false, 'late duplicate must not skip B');
+    assert.equal(env.updates.at(-1).url, 'https://www.threads.com/@tester/post/B1');
+    const injectionCount = env.calls.length;
+    await send.onUpdated(7, {status: 'complete'}, {id: 7, status: 'complete', url: 'https://www.threads.com/@tester/post/A1'});
+    assert.equal(env.calls.length, injectionCount, 'old completion event cannot inject while next target is pending');
+    assert.equal((await store.status()).running, true);
+    env.arrive(); await send.onUpdated(7, {status: 'complete'}, {id: 7, status: 'complete', url: 'https://www.threads.com/@tester/post/A1'});
+    const second = env.config();
+    assert.notEqual(second.runId, first.runId); assert.equal(second.startedAt, 1000);
+    assert.equal(second.navigation.activeChain.rootId, '/@tester/post/B1'); assert.equal(second.navigation.repairIndex, 1);
+    await send({type: 'chain', runId: second.runId, chain: repairChain('B')}, {tab: {id: 7}});
+    await send({type: 'checkpoint', runId: second.runId, navigation: {...second.navigation, mode: 'returning'}}, {tab: {id: 7}});
+    assert.equal((await send({type: 'repair-next', rootId: '/@tester/post/B1', runId: second.runId}, {tab: {id: 7}})).ok, true);
+    assert.equal(env.updates.at(-1).url, 'https://www.threads.com/@tester');
+    assert.equal((await store.status()).running, false);
+    assert.match((await store.status()).capture.reason, /미완료 글 재수집/);
+    assert.equal((await store.exportCapture()).cards.length, 5);
+    assert.equal((await store.getChains()).find(chain => chain.rootId.endsWith('/A1')).status, 'complete');
+    env.arrive(); await send.onUpdated(7, {status: 'complete'}, {...env.tab});
+    assert.equal(env.calls.length, injectionCount + 2, 'completion never starts a profile scanner');
+  } finally { await store.close(); }
+});
+
+test('미완료 재수집은 확인한 멈춘 계정과 같은 계정 탭만 허용하고 임의 URL·완료 글은 큐에서 제외한다', async () => {
+  const store = new CaptureStore({indexedDB: new IDBFactory()}), env = environment();
+  const send = createMessageHandler({store, chrome: env.chrome});
+  try {
+    const repair = await savedRepair(store);
+    await assert.rejects(send(repair, {tab: {id: 7}, ...popupSender}), /확장 팝업/);
+    await assert.rejects(send({...repair, account: 'other'}, popupSender), /대상이 바뀌/);
+    await assert.rejects(send({...repair, runId: 'stale'}, popupSender), /대상이 바뀌/);
+    for (const url of ['https://www.threads.com/', 'https://www.threads.com/@other', 'https://example.com/@tester']) {
+      env.tab.url = url; await assert.rejects(send(repair, popupSender), /같은 계정/);
+    }
+    assert.equal(env.updates.length, 0);
+    await store.transaction('readwrite', stores => {
+      for (const chain of [{...repairChain('X'), rootId: '/@other/post/X1'}, {...repairChain('X'), rootId: 'https://evil.example/'}, {...repairChain('X'), total: 0}])
+        stores.chains.put({account: 'tester', rootId: chain.rootId, chain});
+    });
+    env.tab.url = 'https://www.threads.com/@tester/post/Another';
+    await send(repair, popupSender);
+    assert.deepEqual((await store.getControl()).navigation.repairQueue, ['/@tester/post/A1', '/@tester/post/B1']);
+    await assert.rejects(send({...repair, runId: (await store.getControl()).runId}, popupSender), /먼저 중지/);
+    await send({type: 'stop'}); const before = env.calls.length;
+    env.arrive(); await send.onUpdated(7, {status: 'complete'}, {...env.tab}); await send.onActivated({tabId: 7});
+    assert.equal(env.calls.length, before); assert.equal((await store.status()).running, false);
+  } finally { await store.close(); }
+});
+
+test('재수집 복구는 큐·상세 제한·전체 마감을 보존하며 저장 후 재로딩한 다음 요청도 한 번만 처리한다', async () => {
+  const store = new CaptureStore({indexedDB: new IDBFactory()}), env = environment();
+  let time = 1000;
+  const send = createMessageHandler({store, chrome: env.chrome, now: () => time});
+  try {
+    await send(await savedRepair(store), popupSender); env.arrive(); await send.onUpdated(7, {status: 'complete'}, {...env.tab});
+    const first = env.config();
+    await send({type: 'chain', runId: first.runId, chain: repairChain('A')}, {tab: {id: 7}});
+    await send({type: 'checkpoint', runId: first.runId, navigation: {...first.navigation, mode: 'returning'}}, {tab: {id: 7}});
+    env.disconnect(); time = 9000; await send.onUpdated(7, {status: 'complete'}, {...env.tab});
+    const resumed = env.config();
+    assert.notEqual(resumed.runId, first.runId); assert.equal(resumed.startedAt, first.startedAt);
+    assert.deepEqual(resumed.navigation, {...first.navigation, mode: 'returning'});
+    assert.equal((await send({type: 'repair-next', rootId: '/@tester/post/A1', runId: first.runId}, {tab: {id: 7}})).ok, false);
+    assert.equal((await send({type: 'repair-next', rootId: '/@tester/post/A1', runId: resumed.runId}, {tab: {id: 7}})).ok, true);
+    time = 45 * 60 * 1000 + 1000;
+    await send({type: 'status'});
+    assert.equal((await store.status()).running, false);
+    assert.match((await store.status()).capture.reason, /시간 상한/);
+  } finally { await store.close(); }
+});
+
+test('재수집 이동 완료가 프로필·홈·다른 화면이면 무한 대기하지 않고 저장 자료를 보존한 채 중단한다', async () => {
+  for (const destination of ['https://www.threads.com/@tester', 'https://www.threads.com/', 'https://www.threads.com/login']) {
+    const store = new CaptureStore({indexedDB: new IDBFactory()}), env = environment();
+    const send = createMessageHandler({store, chrome: env.chrome});
+    try {
+      await send(await savedRepair(store), popupSender);
+      const before = await store.exportCapture();
+      env.arrive(); env.tab.url = destination;
+      await send.onUpdated(7, {status: 'complete'}, {...env.tab});
+      const status = await store.status(), after = await store.exportCapture();
+      assert.equal(status.running, false, destination);
+      assert.match(status.capture.reason, /다른 화면.*중단/);
+      assert.deepEqual(after.cards, before.cards); assert.deepEqual(after.chains, before.chains);
+      assert.equal(env.calls.length, 0, 'do not inject on a committed unexpected route');
+      assert.equal(env.updates.length, 1, 'do not move on to another chain');
+      await send.onActivated({tabId: 7});
+      assert.equal(env.calls.length, 0, 'opening the tab again must not restart it');
+    } finally { await store.close(); }
+  }
+});
+
+test('대기 중이던 재수집 다음 요청은 사용자가 이동한 홈·외부·이동 예정 탭을 덮어쓰지 않는다', async () => {
+  for (const destination of ['home', 'external', 'pending-away']) {
+    const store = new CaptureStore({indexedDB: new IDBFactory()}), env = environment();
+    const send = createMessageHandler({store, chrome: env.chrome});
+    try {
+      await send(await savedRepair(store), popupSender); env.arrive(); await send.onUpdated(7, {status: 'complete'}, {...env.tab});
+      const config = env.config();
+      await send({type: 'chain', runId: config.runId, chain: repairChain('A')}, {tab: {id: 7}});
+      await send({type: 'checkpoint', runId: config.runId, navigation: {...config.navigation, mode: 'returning'}}, {tab: {id: 7}});
+      const before = await store.exportCapture(), exportCapture = store.exportCapture.bind(store);
+      let release, entered;
+      const exportEntered = new Promise(resolve => {entered = resolve;});
+      store.exportCapture = async () => {const waiting = new Promise(resolve => {release = resolve;});entered();await waiting;return exportCapture();};
+      const preceding = send({type: 'export'});
+      await exportEntered;
+      const next = send({type: 'repair-next', rootId: '/@tester/post/A1', runId: config.runId}, {tab: {id: 7}});
+      if (destination === 'home') env.tab.url = 'https://www.threads.com/';
+      if (destination === 'external') env.tab.url = 'https://example.com/';
+      if (destination === 'pending-away') {env.tab.pendingUrl = 'https://www.threads.com/';env.tab.status = 'loading';}
+      release(); await preceding;
+      assert.equal((await next).ok, false, destination);
+      store.exportCapture = exportCapture;
+      assert.equal(env.updates.length, 1, 'queued next must not overwrite user navigation');
+      assert.equal((await store.status()).running, false);
+      assert.match((await store.status()).capture.reason, /다른 화면.*중단/);
+      const after = await store.exportCapture();
+      assert.deepEqual(after.cards, before.cards); assert.deepEqual(after.chains, before.chains);
+    } finally { await store.close(); }
+  }
+});
 
 test('팝업이 확인한 현재 계정만 초기화하고 이전 실행 메시지·복원 이벤트는 다시 수집하지 않는다', async () => {
   const store = new CaptureStore({indexedDB: new IDBFactory()}), env = environment();

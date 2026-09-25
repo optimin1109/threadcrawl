@@ -8,6 +8,9 @@ const storeNames = ['captures', 'cards', 'issues', 'control', 'chains'];
 const matches = (control, identity) => control?.running && identity.tabId === control.tabId && identity.runId === control.runId;
 const initialNavigation = account => ({mode: 'profile', profilePath: `/@${account}`, activeChain: null, resume: null, visitedRoots: []});
 const chainValidationVersion = 1;
+const cleanCard = card => typeof card?.text === 'string' && Array.isArray(card.issues) && !card.issues.length;
+const cardContent = card => JSON.stringify([card.id, card.timestamp, card.text, card.label, card.context,
+  card.attachments, card.notes ?? [], card.groupIds]);
 async function storedMissing(stores, account, chain, members = new Map(chain.members.map(member => [member.part, member.id]))) {
   const missing = [], conflictParts = new Set((chain.conflicts ?? []).map(item => item.part));
   for (let part = 1; part <= chain.total; part++) {
@@ -90,6 +93,7 @@ export class CaptureStore {
       stores.captures.put(meta);
       stores.control.put({account, tabId, runId, running: true, startedAt: options.startedAt ?? Date.now(),
         recoveryAttempts: options.recoveryAttempts ?? 0,
+        repairOpening: Boolean(options.repairOpening), repairSavedRoot: options.repairSavedRoot ?? null,
         navigation: structuredClone(options.navigation ?? initialNavigation(account))}, 'active');
       return {ok: true};
     });
@@ -116,6 +120,14 @@ export class CaptureStore {
     return this.transaction('readwrite', async stores => {
       const control = await request(stores.control.get('active'));
       if (!matches(control, identity)) return {ok: false};
+      if (control.navigation?.workflow === 'repair' && (navigation?.workflow !== 'repair' ||
+          !['opening', 'detail', 'returning'].includes(navigation.mode) ||
+          navigation.repairIndex !== control.navigation.repairIndex ||
+          JSON.stringify(navigation.repairQueue) !== JSON.stringify(control.navigation.repairQueue) ||
+          navigation.activeChain?.rootId !== control.navigation.activeChain?.rootId))
+        throw new Error('재수집할 글과 순서는 변경할 수 없습니다.');
+      if (control.navigation?.workflow !== 'repair' && navigation?.workflow === 'repair')
+        throw new Error('재수집은 팝업에서 시작하세요.');
       if (!navigation || !['profile', 'opening', 'detail', 'returning'].includes(navigation.mode) || navigation.profilePath !== `/@${control.account}`)
         throw new Error('현재 계정의 탐색 위치가 아닙니다.');
       if (navigation.activeChain != null && (typeof navigation.activeChain.rootId !== 'string' ||
@@ -130,6 +142,8 @@ export class CaptureStore {
     return this.transaction('readwrite', async stores => {
       const control = await request(stores.control.get('active'));
       if (!matches(control, identity)) return {ok: false};
+      if (control.navigation?.workflow === 'repair' && chain?.rootId !== control.navigation.activeChain?.rootId)
+        throw new Error('현재 재수집 중인 첫 글의 기록이 아닙니다.');
       const validId = id => typeof id === 'string' && id.startsWith(`/@${control.account}/post/`) && /^\/@[a-z0-9_.]+\/post\/[A-Za-z0-9_-]+$/i.test(id);
       if (!validId(chain?.rootId) || !Number.isInteger(chain.total) || chain.total < 1 || chain.total > 10000 ||
           !['pending', 'complete', 'incomplete'].includes(chain.status) || !Array.isArray(chain.members)) throw new Error('연속글 확인 기록 형식이 잘못되었습니다.');
@@ -157,6 +171,10 @@ export class CaptureStore {
       for (const [field, value] of [['completedChainCount', 'complete'], ['incompleteChainCount', 'incomplete']])
         meta[field] = (meta[field] ?? 0) + Number(status === value) - Number(previous?.chain.status === value);
       stores.captures.put(meta);
+      if (control.navigation?.workflow === 'repair' && ['complete', 'incomplete'].includes(normalized.status)) {
+        control.repairSavedRoot = normalized.rootId;
+        stores.control.put(control, 'active');
+      }
       return {ok: true, chain: normalized};
     });
   }
@@ -194,9 +212,13 @@ export class CaptureStore {
       assertPage(page, control.account);
       const meta = await request(stores.captures.get(control.account));
       const issues = [...page.issues];
+      let unchangedCleanPage = page.view === 'profile' && control.navigation?.mode === 'profile' &&
+        !page.blocked && !page.loading && page.cards.length > 0 && !page.issues.length;
       for (const incoming of page.cards) {
         const old = await request(stores.cards.get([control.account, incoming.id]));
         const merged = mergeCard(old?.card, incoming);
+        if (!cleanCard(old?.card) || !cleanCard(incoming) || merged.issue || cardContent(old.card) !== cardContent(incoming))
+          unchangedCleanPage = false;
         if (old) meta.duplicateCount++;
         else meta.cardCount++;
         stores.cards.put({account: control.account, id: incoming.id, card: merged.card, order: old?.order ?? meta.cardCount});
@@ -219,7 +241,7 @@ export class CaptureStore {
       }
       stores.control.put(control, 'active');
       stores.captures.put(meta);
-      return {ok: control.running};
+      return {ok: control.running, unchangedCleanPage};
     });
   }
   async exportCapture() {

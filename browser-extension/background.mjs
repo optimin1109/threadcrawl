@@ -3,6 +3,30 @@ import {CaptureStore} from './storage.mjs';
 export function createMessageHandler({store, chrome, now = Date.now, maxRecoveryAttempts = 3}) {
   let sequence = Promise.resolve();
   const duration = 1800 * 1500;
+  const fromPopup = sender => !sender.tab && chrome.runtime?.id && sender.id === chrome.runtime.id && sender.url === chrome.runtime.getURL('popup.html');
+  const ownPost = (id, account) => typeof id === 'string' && id.startsWith(`/@${account}/post/`) && /^\/@[a-z0-9_.]+\/post\/[A-Za-z0-9_-]+$/i.test(id);
+  const repairable = (chain, account) => ownPost(chain?.rootId, account) && ['pending', 'incomplete'].includes(chain.status) &&
+    Number.isInteger(chain.total) && chain.total >= 2 && chain.total <= 1000 && Array.isArray(chain.members) &&
+    chain.members.every(member => Number.isInteger(member.part) && member.part >= 1 && member.part <= chain.total && ownPost(member.id, account));
+  const repairNavigation = (navigation, chain, index) => {
+    const parts = Array.from({length: chain.total}, (_, i) => i + 1);
+    const missing = new Set(Array.isArray(chain.missing) ? chain.missing : parts);
+    const members = chain.members.filter(member => !missing.has(member.part));
+    const activeChain = {...structuredClone(chain), status: 'pending', members,
+      missing: parts.filter(part => !members.some(member => member.part === part))};
+    delete activeChain.completedFrom;
+    return {...navigation, mode: 'opening', repairIndex: index, activeChain, detailStartedAt: now(), resume: null};
+  };
+  const openRepair = async (control, navigation, startedAt) => {
+    const runId = crypto.randomUUID();
+    await store.start(control.account, control.tabId, runId, {navigation, startedAt, repairOpening: true});
+    try { await chrome.tabs.update(control.tabId, {url: `https://www.threads.com${navigation.activeChain.rootId}`}); }
+    catch (error) {
+      await store.finish('불완전', `미완료 글 재수집 이동 실패: ${error.message}`, {tabId: control.tabId, runId});
+      throw error;
+    }
+    return {ok: true};
+  };
   const isConnected = async control => {
     try {
       const reply = await chrome.tabs.sendMessage(control.tabId, {type: 'ping', runId: control.runId});
@@ -30,7 +54,7 @@ export function createMessageHandler({store, chrome, now = Date.now, maxRecovery
         startedAt: control.startedAt, chains: await store.getChains()}]});
     await chrome.scripting.executeScript({target: {tabId: control.tabId}, files: ['reader.js', 'chains.js', 'content.js']});
   };
-  const reconcile = async (recover = false, observedTab = null) => {
+  const reconcile = async (recover = false, observedTab = null, navigationCompleted = false) => {
     const control = await store.getControl();
     if (!control?.running) return null;
     if (Number.isFinite(control.startedAt) && now() - control.startedAt >= duration) {
@@ -39,8 +63,30 @@ export function createMessageHandler({store, chrome, now = Date.now, maxRecovery
       return null;
     }
     let tab;
-    try { tab = observedTab ?? await chrome.tabs.get(control.tabId); }
+    // onUpdated payloads can be queued behind a repair advancement. Read the
+    // current tab again before injecting so an old root event cannot win.
+    try { tab = control.navigation?.workflow === 'repair' ? await chrome.tabs.get(control.tabId) : observedTab ?? await chrome.tabs.get(control.tabId); }
     catch { return '연결 확인 중 — 탭 상태를 확인할 수 없습니다.'; }
+    if (control.repairOpening) {
+      if (now() - control.navigation.detailStartedAt >= 120000) {
+        await store.finish('불완전', '미완료 글 재수집 상세 화면 이동 시간 상한 도달', control);
+        return null;
+      }
+      const atExpectedRoot = allowedLocation(tab, {...control, navigation: {...control.navigation, mode: 'detail'}});
+      const stillLoading = tab.discarded || tab.frozen || tab.status !== 'complete' || tab.pendingUrl;
+      if (navigationCompleted && !stillLoading && tab.status === 'complete' && typeof tab.url === 'string' && tab.url && !atExpectedRoot) {
+        await store.finish('불완전', '미완료 글 재수집 중 요청한 상세 글과 다른 화면으로 이동하여 중단', control);
+        return null;
+      }
+      if (stillLoading || !atExpectedRoot)
+        return '미완료 글의 상세 화면으로 이동 중입니다.';
+      await store.start(control.account, control.tabId, control.runId, {navigation: control.navigation, startedAt: control.startedAt});
+      try { await inject(await store.getControl()); return '저장된 미완료 글을 다시 확인합니다.'; }
+      catch (error) {
+        await store.finish('불완전', `미완료 글 재수집 연결 실패: ${error.message}`, control);
+        return null;
+      }
+    }
     if (tab.discarded || tab.frozen || tab.status === 'loading') return '탭 복원·로딩 대기 중 — 저장한 자료와 탐색 위치를 보존합니다.';
     if (typeof tab.url !== 'string' || !tab.url) return '연결 확인 중 — 대상 탭 주소를 아직 확인할 수 없습니다.';
     if (!allowedLocation(tab, control)) {
@@ -61,7 +107,7 @@ export function createMessageHandler({store, chrome, now = Date.now, maxRecovery
       return null;
     }
     await store.start(control.account, control.tabId, crypto.randomUUID(), {
-      navigation: control.navigation, startedAt: control.startedAt ?? now(), recoveryAttempts: attempts});
+      navigation: control.navigation, startedAt: control.startedAt ?? now(), recoveryAttempts: attempts, repairSavedRoot: control.repairSavedRoot});
     const resumed = await store.getControl();
     try { await inject(resumed); return '저장한 탐색 위치에서 다시 연결했습니다.'; }
     catch (error) {
@@ -72,11 +118,60 @@ export function createMessageHandler({store, chrome, now = Date.now, maxRecovery
   async function handle(message, sender = {}) {
     const control = await store.getControl();
     if (message.type === 'reset') {
-      if (sender.tab || !chrome.runtime?.id || sender.id !== chrome.runtime.id || sender.url !== chrome.runtime.getURL('popup.html'))
+      if (!fromPopup(sender))
         throw new Error('초기화는 확장 팝업에서만 요청할 수 있습니다.');
       if (!control || message.account !== control.account || message.runId !== control.runId)
         throw new Error('초기화 대상이 바뀌었습니다. 팝업에서 계정을 다시 확인하세요.');
       return store.resetCapture({account: control.account, runId: control.runId});
+    }
+    if (message.type === 'repair') {
+      if (!fromPopup(sender)) throw new Error('미완료 글 재수집은 확장 팝업에서만 요청할 수 있습니다.');
+      if (!control || message.account !== control.account || message.runId !== control.runId)
+        throw new Error('재수집 대상이 바뀌었습니다. 팝업에서 계정을 다시 확인하세요.');
+      if (control.running) throw new Error('이미 수집 중입니다. 먼저 중지하세요.');
+      const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
+      const url = new URL(tab?.url || 'about:blank');
+      const path = url.pathname.replace(/\/$/, '');
+      if (url.protocol !== 'https:' || url.hostname !== 'www.threads.com' || !Number.isInteger(tab.id) ||
+          (path !== `/@${control.account}` && !ownPost(path, control.account)))
+        throw new Error('저장된 자료와 같은 계정의 프로필 또는 게시물 탭을 먼저 여세요.');
+      const chains = (await store.getChains()).filter(chain => repairable(chain, control.account));
+      if (!chains.length) throw new Error('다시 수집할 미완료 연속글이 없습니다.');
+      const navigation = repairNavigation({workflow: 'repair', profilePath: `/@${control.account}`,
+        repairQueue: chains.map(chain => chain.rootId), visitedRoots: []}, chains[0], 0);
+      return openRepair({...control, tabId: tab.id}, navigation, now());
+    }
+    if (message.type === 'repair-next') {
+      const navigation = control?.navigation;
+      if (!control?.running || sender.tab?.id !== control.tabId || message.runId !== control.runId ||
+          navigation?.workflow !== 'repair' || navigation.mode !== 'returning' ||
+          message.rootId !== navigation.activeChain?.rootId || control.repairSavedRoot !== message.rootId ||
+          navigation.repairQueue[navigation.repairIndex] !== message.rootId) return {ok: false};
+      const chains = await store.getChains(), saved = chains.find(chain => chain.rootId === message.rootId);
+      if (!saved || !['complete', 'incomplete'].includes(saved.status)) return {ok: false};
+      let tab;
+      try { tab = await chrome.tabs.get(control.tabId); }
+      catch {
+        await store.finish('불완전', '미완료 글 재수집 탭을 확인하지 못해 중단', control);
+        return {ok: false};
+      }
+      const expected = {...control, navigation: {...navigation, mode: 'detail'}};
+      if (!allowedLocation(tab, expected) || (tab.pendingUrl && !allowedLocation({url: tab.pendingUrl}, expected))) {
+        await store.finish('불완전', '미완료 글 재수집 중 다른 화면으로 이동하여 중단. 저장한 자료는 보존했습니다.', control);
+        return {ok: false};
+      }
+      if (tab.discarded || tab.frozen || tab.status !== 'complete' || tab.pendingUrl) return {ok: false};
+      const expired = now() - control.startedAt >= duration;
+      if (!expired) for (let index = navigation.repairIndex + 1; index < navigation.repairQueue.length; index++) {
+        const next = chains.find(chain => chain.rootId === navigation.repairQueue[index]);
+        if (repairable(next, control.account)) return openRepair(control, repairNavigation(navigation, next, index), control.startedAt);
+      }
+      const unresolved = chains.filter(chain => navigation.repairQueue.includes(chain.rootId) && chain.status !== 'complete').length;
+      await store.finish('중단', expired ? '미완료 글 재수집 시간 상한 도달. 저장한 자료를 보존했습니다.'
+        : `미완료 글 재수집 종료. 남은 미완료 ${unresolved}묶음.`, control);
+      try { await chrome.tabs.update(control.tabId, {url: `https://www.threads.com${navigation.profilePath}`}); }
+      catch { return {ok: true, warning: '재수집은 종료했으나 프로필 화면으로 이동하지 못했습니다.'}; }
+      return {ok: true};
     }
     if (['snapshot', 'checkpoint', 'chain'].includes(message.type)) {
       const identity = {tabId: sender.tab?.id, runId: message.runId};
@@ -138,7 +233,7 @@ export function createMessageHandler({store, chrome, now = Date.now, maxRecovery
   send.onUpdated = (tabId, changeInfo, tab) => enqueue(async () => {
     const control = await store.getControl();
     if (control?.running && control.tabId === tabId &&
-        (changeInfo.status === 'complete' || changeInfo.discarded === false || changeInfo.frozen === false)) await reconcile(true, tab);
+        (changeInfo.status === 'complete' || changeInfo.discarded === false || changeInfo.frozen === false)) await reconcile(true, tab, changeInfo.status === 'complete');
   });
   send.onActivated = ({tabId}) => enqueue(async () => {
     const control = await store.getControl();

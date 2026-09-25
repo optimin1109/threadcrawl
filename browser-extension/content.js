@@ -14,7 +14,8 @@
   const profilePending=new Map();
   nav.visitedRoots ||= [];
   let stopped=false,stopReason=null,busy=false,dirty=false,timer,deadline,scheduledAt=0,observer;
-  let previous='',rounds=0,lastChange=Date.now(),nextScrollAt=0,nextExpandAt=0,transitionAt=Date.now(),detailProgressAt=Date.now();
+  let previous='',rounds=0,lastChange=Date.now(),lastScrollAt=-Infinity,lastScrollSignature='',unchangedCleanPage=false,
+    nextExpandAt=0,transitionAt=Date.now(),detailProgressAt=Date.now();
   const expanded=new Set();
   const halt=(removeListener=false)=>{
     stopped=true;clearTimeout(timer);clearTimeout(deadline);observer?.disconnect();
@@ -70,10 +71,15 @@
     nav.mode='returning';transitionAt=Date.now();
     if(!await checkpoint())return;
     if(!await canAct(nav.activeChain.rootId))return;
+    if(nav.workflow==='repair'){await advanceRepair();return;}
     const back=[...document.querySelectorAll('button,[role="button"]')].find(el=>
       !el.closest('[data-pressable-container]')&&threadsArchiveVisible(el)&&/^(돌아가기|Back|Go back)$/.test((el.getAttribute('aria-label')||el.textContent).trim()));
     if(!back){await end('연속글을 저장했지만 프로필 돌아가기 버튼을 찾지 못함. 프로필에서 다시 시작하세요.');return;}
     back.click();schedule(intervalMs);
+  }
+  async function advanceRepair(){
+    if(!await canAct(nav.activeChain.rootId))return;
+    if(await persist({type:'repair-next',rootId:nav.activeChain.rootId}))halt();
   }
   function expandReplies(){
     const region=threadsArchiveRegion();
@@ -100,6 +106,7 @@
       if(blockedReason){await end(blockedReason);return;}
       const path=location.pathname;
       const expected=nav.activeChain?.rootId;
+      if(nav.workflow==='repair'&&path!==expected){await end('미완료 글 재수집 중 대상 글 밖으로 이동하여 중단. 저장한 글은 유지됩니다.');return;}
       if(path!==nav.profilePath&&path!==expected){await end('대상 프로필·연속글 밖으로 이동하여 중단');return;}
       if(nav.mode==='opening'){
         if(path===expected){nav.mode='detail';detailProgressAt=Date.now();if(!Number.isFinite(nav.detailStartedAt))nav.detailStartedAt=Date.now();if(!await checkpoint())return;}
@@ -109,6 +116,7 @@
         }
       }
       if(nav.mode==='returning'){
+        if(nav.workflow==='repair'){await advanceRepair();return;}
         if(path!==nav.profilePath){if(Date.now()-transitionAt>15000)await end('프로필 복귀를 확인하지 못함. 저장한 글은 유지됩니다.');else schedule(intervalMs);return;}
         const scroller=threadsArchiveScroller();
         if(!threadsArchiveRegion()||!scroller){
@@ -137,7 +145,8 @@
       const page=readThreadsPage({account,detailRoot:nav.mode==='detail'?expected:undefined});
       const signature=JSON.stringify([page.page,page.cards,page.issues,page.blocked]);
       if(signature!==previous){
-        if(!await persist({type:'snapshot',page}))return;
+        unchangedCleanPage=false;
+        if(!await persist({type:'snapshot',page},response=>{unchangedCleanPage=response.unchangedCleanPage===true;}))return;
         previous=signature;lastChange=Date.now();
       }
       if(stopped||page.blocked){halt();return;}
@@ -205,6 +214,13 @@
         }
         if(!page.loading&&Date.now()-lastChange>=30000){await end('30초 동안 새 글 없음. 현재 목록 끝 또는 로딩 제한인지 미확인');return;}
       }
+      // Only accelerate a newly rendered, fully acknowledged duplicate viewport.
+      // Preserve overlap and slow down immediately for new/loading/unresolved work.
+      const fast=nav.mode==='profile'&&nav.workflow!=='repair'&&unchangedCleanPage&&
+        signature!==lastScrollSignature&&page.view==='profile'&&!page.loading&&!page.issues.length&&
+        page.cards.length>0&&page.cards.every(card=>Array.isArray(card.issues)&&!card.issues.length)&&!profilePending.size;
+      const scrollInterval=fast?Math.min(500,intervalMs):intervalMs;
+      const nextScrollAt=lastScrollAt+scrollInterval;
       if(Date.now()<nextScrollAt){schedule(nextScrollAt-Date.now());return;}
       if(!await canAct(path))return;
       const scroller=threadsArchiveScroller();
@@ -212,7 +228,7 @@
       if(nav.mode==='profile')for(const pending of profilePending.values())
         if(pending.readyAt===null)pending.readyAt=Date.now()+intervalMs;
       scroller.scrollBy({top:Math.max(1,Math.min(innerHeight,scroller.clientHeight)*0.65),behavior:'instant'});
-      rounds++;nextScrollAt=Date.now()+intervalMs;schedule(intervalMs);
+      rounds++;lastScrollAt=Date.now();lastScrollSignature=signature;schedule(scrollInterval);
     }catch(error){await end(`화면 읽기 또는 저장 실패: ${error.message}. 이미 저장한 글은 내보낼 수 있음`);}
     finally{busy=false;}
   }

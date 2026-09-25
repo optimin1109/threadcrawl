@@ -14,7 +14,8 @@ function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,
   mutateDetailSnapshots=false,missingRegionA=false,expandUnrelatedReplies=false,profileCompleteA=false,
   imageInProfileA=false,mediaOnlySecondA=false,progressiveDetailA=false,detailTimeoutMs=120000,
   delayedProfileSecondA=false,removeProfileRootA=false,photoButtonsInProfileA=false,mutateProfileCompleteA=false,lateProfileRootA=false,
-  downgradeProfileCompleteA=false,downgradeDetailCompleteA=false,profileExtrasA=null}={}) {
+  downgradeProfileCompleteA=false,downgradeDetailCompleteA=false,profileExtrasA=null,
+  repair=false,repairReturning=false,rejectRepair=false,holdChain=false,rejectChain=false,securityOnCheckpoint=null,repairOnProfile=false}={}) {
   const badge=(part,n)=>`<div class="x1rg5ohu"><span>${part}</span><span>/</span><span>${n}</span></div>`;
   const row=(prefix,part,n,detail=false,owner='sample')=>`<div data-pressable-container="true"><a href="/@${owner}/post/${prefix}${part}"><time datetime="2026-09-19T04:00:00Z"></time></a>${detail?badge(part,n):''}<div class="${detail?'xqti54a x49hn82 xcrlgei x889kno':'x1xdureb xkbb5z'} x13vxnyz"><div><div class="x1a6qonq"><div><span dir="auto">${prefix} ${part} 본문${detail?'':badge(part,n)}</span></div></div><div><button>좋아요</button></div></div></div></div>`;
   const region=html=>`<main data-column-scrollable role="region">${html}</main>`;
@@ -36,12 +37,14 @@ function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,
     return region((profileCompleteA?'<div data-virtualized="true">':'')+first+(delayedProfileSecondA?'':second)
       +(profileCompleteA?'</div>':'')+row('B',1,3)+row('B',2,3));
   };
-  const dom=new JSDOM(profile(),{url:'https://www.threads.com/@sample',runScripts:'outside-only',pretendToBeVisual:true});
+  const repairPage=()=>region(Array.from({length:total},(_,i)=>i+1).filter(i=>i!==missing).map(i=>row('A',i,total,i===1)).join(''));
+  const dom=new JSDOM(repair&&!repairOnProfile?repairPage():profile(),{url:`https://www.threads.com/@sample${repair&&!repairOnProfile?'/post/A1':''}`,runScripts:'outside-only',pretendToBeVisual:true});
   const w=dom.window,messages=[],events=[],timers=new Map();
   w.structuredClone=structuredClone;
-  let now=1000,nextId=0,top=400,layoutShift=0,detailSnapshotCount=0,visibleParts=1,release;
+  let now=1000,nextId=0,top=400,layoutShift=0,detailSnapshotCount=0,visibleParts=1,release,releaseChain,runtimeListener;
   const restoredPositions=[],expansionTimes=[],profileScrollTimes=[],detailOpenTimes=[];
   const pending=new Promise(r=>release=r);
+  const pendingChain=new Promise(r=>releaseChain=r);
   w.Date.now=()=>now;
   w.setTimeout=(fn,delay=0)=>{timers.set(++nextId,{fn,at:now+delay});return nextId;};
   w.clearTimeout=id=>timers.delete(id);
@@ -87,11 +90,14 @@ function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,
   w.chrome={runtime:{sendMessage:message=>{
     messages.push(JSON.parse(JSON.stringify(message)));events.push(message.type);
     if(message.type==='checkpoint'&&message.navigation.mode===redirectOnCheckpoint)w.history.replaceState({},'','/@other');
+    if(message.type==='checkpoint'&&message.navigation.mode===securityOnCheckpoint)
+      w.document.body.innerHTML='<h1>보안 확인</h1><input type="password">';
     if(mutateDetailSnapshots&&message.type==='snapshot'&&message.page.detailRoot==='/@sample/post/A1'){
       const text=w.document.querySelector('.x49hn82 .x1a6qonq span[dir="auto"]');
       text.firstChild.textContent=`저장 중 바뀐 본문 ${++detailSnapshotCount}`;
     }
     let result={ok:true};
+    if(message.type==='repair-next'&&rejectRepair)result={ok:false,error:'repair step rejected'};
     if(message.type==='chain'){
       const chain=structuredClone(message.chain);
       if(chain.rootId==='/@sample/post/A1'&&chain.status==='complete'&&
@@ -100,8 +106,10 @@ function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,
         chain.missing=[chain.total];chain.reason=`저장된 ${chain.total}번 본문 검증 실패`;
       }
       result={ok:true,chain};
+      if(rejectChain)result={ok:false,error:'chain save rejected'};
     }
-    const response=message.type==='snapshot' && holdSnapshot ? pending : Promise.resolve(result);
+    const response=message.type==='snapshot' && holdSnapshot ? pending
+      : message.type==='chain' && holdChain ? pendingChain : Promise.resolve(result);
     return response.then(value=>{
       events.push(`ack:${message.type}${message.type==='chain'?`:${value.chain?.status || message.chain.status}`:''}`);
       if(mutateProfileCompleteA&&message.type==='chain'&&value.chain?.rootId==='/@sample/post/A1'&&
@@ -109,8 +117,10 @@ function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,
         w.document.body.appendChild(w.document.createElement('div'));
       return value;
     });
-  },onMessage:{addListener(){},removeListener(){}}}};
+  },onMessage:{addListener(listener){runtimeListener=listener;},removeListener(listener){if(runtimeListener===listener)runtimeListener=null;}}}};
   w.threadsArchiveConfig={runId:'run',intervalMs:1500,maxRounds:1800,detailTimeoutMs,startedAt:now,navigation:{mode:'profile',profilePath:'/@sample',activeChain:null,resume:null,visitedRoots:[]},chains:[]};
+  if(repair)w.threadsArchiveConfig.navigation={...w.threadsArchiveConfig.navigation,workflow:'repair',repairQueue:['/@sample/post/A1','/@sample/post/B1'],repairIndex:0,
+    mode:repairReturning?'returning':'opening',detailStartedAt:now,activeChain:{rootId:'/@sample/post/A1',total,status:repairReturning?'incomplete':'pending',members:[],missing:Array.from({length:total},(_,i)=>i+1)}};
   w.eval(source('reader.js'));
   if(existsSync(file('chains.js')))w.eval(source('chains.js'));
   w.eval(source('content.js'));
@@ -126,7 +136,8 @@ function harness({total=12,missing=null,holdSnapshot=false,returnSecurity=false,
     w.threadsArchiveConfig={...w.threadsArchiveConfig,runId:'reloaded-run',navigation:structuredClone(navigation)};
     w.eval(source('content.js'));
   };
-  return {dom,w,messages,events,restoredPositions,expansionTimes,profileScrollTimes,detailOpenTimes,advance,release,reload,now:()=>now,stop:()=>{w.threadsArchiveStop();dom.window.close();}};
+  const control=message=>{let response;runtimeListener?.(message,{},value=>response=value);return response;};
+  return {dom,w,messages,events,restoredPositions,expansionTimes,profileScrollTimes,detailOpenTimes,advance,release,releaseChain,control,reload,now:()=>now,stop:()=>{w.threadsArchiveStop();dom.window.close();}};
 }
 function assertAckedIncompleteReturn(h) {
   const back=h.events.indexOf('back');
@@ -134,6 +145,132 @@ function assertAckedIncompleteReturn(h) {
   assert.deepEqual(h.events.slice(back-4,back),['chain','ack:chain:incomplete','checkpoint','ack:checkpoint'],
     'incomplete chain and navigation must both be acknowledged before clicking Back');
 }
+
+test('direct repair saves numbered bodies then advances without profile scrolling or a Back button',async()=>{
+  const h=harness({total:2,repair:true});
+  try {
+    await h.advance(5);
+    const next=h.messages.filter(m=>m.type==='repair-next');
+    assert.equal(next.length,1);
+    assert.equal(next[0].rootId,'/@sample/post/A1');
+    assert.ok(h.messages.some(m=>m.type==='chain'&&m.chain.status==='complete'));
+    const advancing=h.events.indexOf('repair-next');
+    assert.deepEqual(h.events.slice(advancing-4,advancing),['chain','ack:chain:complete','checkpoint','ack:checkpoint']);
+    assert.ok(!h.events.includes('back')&&!h.events.includes('scroll'));
+  } finally { h.stop(); }
+});
+
+test('direct repair cannot advance before its body snapshot is acknowledged',async()=>{
+  const h=harness({total:2,repair:true,holdSnapshot:true});
+  try {
+    await flush();assert.ok(!h.events.includes('repair-next'));
+    h.release({ok:true});await h.advance(3);
+    assert.equal(h.messages.filter(m=>m.type==='repair-next').length,1);
+  } finally { h.stop(); }
+});
+
+test('direct repair waits for the terminal chain acknowledgement before advancing',async()=>{
+  const h=harness({total:2,repair:true,holdChain:true});
+  try {
+    await flush();
+    const report=h.messages.find(message=>message.type==='chain');
+    assert.equal(report?.chain.status,'complete');
+    assert.equal(h.messages.filter(message=>message.type==='repair-next').length,0);
+    assert.equal(h.messages.some(message=>message.type==='checkpoint'&&message.navigation.mode==='returning'),false);
+    h.releaseChain({ok:true,chain:report.chain});await h.advance(3);
+    assert.equal(h.messages.filter(message=>message.type==='repair-next').length,1);
+    const advancing=h.events.indexOf('repair-next');
+    assert.deepEqual(h.events.slice(advancing-4,advancing),['chain','ack:chain:complete','checkpoint','ack:checkpoint']);
+  } finally { h.stop(); }
+});
+
+test('direct repair halts when the terminal chain save is rejected',async()=>{
+  const h=harness({total:2,repair:true,rejectChain:true});
+  try {
+    await h.advance(10);
+    assert.equal(h.messages.filter(message=>message.type==='chain').length,1);
+    assert.equal(h.messages.filter(message=>message.type==='repair-next').length,0);
+    assert.equal(h.messages.some(message=>message.type==='checkpoint'&&message.navigation.mode==='returning'),false);
+    const ping=h.control({type:'ping'});
+    assert.equal(ping.running,false);
+    assert.match(ping.reason,/chain save rejected/);
+    assert.ok(!h.events.includes('scroll')&&!h.events.includes('back'));
+  } finally { h.stop(); }
+});
+
+test('a rejected repair-next request is sent once and halts instead of retrying',async()=>{
+  const h=harness({total:2,repair:true,rejectRepair:true});
+  try {
+    await h.advance(10);
+    assert.equal(h.messages.filter(message=>message.type==='repair-next').length,1);
+    const ping=h.control({type:'ping'});
+    assert.equal(ping.running,false);
+    assert.match(ping.reason,/repair step rejected/);
+    assert.ok(!h.events.includes('scroll')&&!h.events.includes('back'));
+  } finally { h.stop(); }
+});
+
+test('security shown during the final repair checkpoint prevents advancement',async()=>{
+  const h=harness({total:2,repair:true,securityOnCheckpoint:'returning'});
+  try {
+    await h.advance(10);
+    assert.ok(h.messages.some(message=>message.type==='chain'&&message.chain.status==='complete'));
+    assert.ok(h.messages.some(message=>message.type==='ended'&&/보안|로그인/.test(message.reason)));
+    assert.equal(h.messages.filter(message=>message.type==='repair-next').length,0);
+    assert.equal(h.control({type:'ping'}).running,false);
+    assert.ok(!h.events.includes('scroll')&&!h.events.includes('back'));
+  } finally { h.stop(); }
+});
+
+test('stopping direct repair during a pending snapshot prevents late acknowledgement from advancing',async()=>{
+  const h=harness({total:2,repair:true,holdSnapshot:true});
+  try {
+    await flush();
+    assert.equal(h.messages.filter(message=>message.type==='snapshot').length,1);
+    assert.equal(h.control({type:'stop',runId:'run'}).ok,true);
+    h.release({ok:true});await h.advance(10);
+    assert.ok(h.events.includes('ack:snapshot'),'the already pending save may finish');
+    assert.equal(h.messages.filter(message=>message.type==='chain').length,0);
+    assert.equal(h.messages.filter(message=>message.type==='repair-next').length,0);
+    assert.equal(h.control({type:'ping'}).running,false);
+    assert.ok(!h.events.includes('scroll')&&!h.events.includes('back'));
+  } finally { h.stop(); }
+});
+
+test('direct repair on an unexpected profile stops without falling back to a full profile collection',async()=>{
+  const h=harness({total:2,repair:true,repairOnProfile:true});
+  try {
+    await h.advance(20);
+    assert.ok(h.messages.some(message=>message.type==='ended'));
+    assert.equal(h.messages.filter(message=>message.type==='snapshot').length,0);
+    assert.equal(h.messages.filter(message=>message.type==='repair-next').length,0);
+    assert.equal(h.control({type:'ping'}).running,false);
+    assert.ok(!h.events.includes('scroll')&&!h.events.some(event=>event.startsWith('open:')));
+    assert.equal(h.w.location.pathname,'/@sample');
+  } finally { h.stop(); }
+});
+
+test('an unresolved direct repair records its missing number and advances once after the existing deadline',async()=>{
+  const h=harness({total:2,repair:true,missing:2});
+  try {
+    await h.advance(20);
+    const report=h.messages.filter(m=>m.type==='chain').at(-1);
+    assert.equal(report.chain.status,'incomplete');
+    assert.deepEqual(report.chain.missing,[2]);
+    assert.equal(h.messages.filter(m=>m.type==='repair-next').length,1);
+    assert.ok(!h.events.includes('back'));
+    assert.ok(h.now()<16000,'no endless retry of the same missing number');
+  } finally { h.stop(); }
+});
+
+test('a repair reloaded after its terminal checkpoint advances without depending on browser history',async()=>{
+  const h=harness({total:2,repair:true,repairReturning:true});
+  try {
+    await h.advance(3);
+    assert.equal(h.messages.filter(m=>m.type==='repair-next').length,1);
+    assert.ok(!h.events.includes('back')&&!h.events.includes('scroll'));
+  } finally { h.stop(); }
+});
 test('opens each profile chain, saves twelve parts, returns, and continues to another post',async()=>{
   const h=harness();await h.advance(15);
   const complete=h.messages.filter(m=>m.type==='chain'&&m.chain.status==='complete');

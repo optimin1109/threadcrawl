@@ -10,6 +10,50 @@ const identity = {tabId: 7, runId: 'first-run'};
 const completeChain = cards => ({rootId: cards[0].id, total: cards.length, status: 'complete',
   members: cards.map((item, index) => ({part: index + 1, id: item.id})), missing: [], reason: null});
 
+test('중복 화면 빠른 이동 확인은 이미 저장한 깨끗한 목록 본문 전체가 같은 경우만 허용한다', async () => {
+  for (const change of ['same', 'new-card', 'text', 'label', 'timestamp', 'context', 'attachments', 'notes', 'groupIds', 'card-issue', 'old-issue', 'page-issue', 'empty', 'detail', 'loading', 'blocked']) {
+    const store = new CaptureStore({indexedDB: new IDBFactory()});
+    try {
+      await store.start('tester', 7, identity.runId);
+      const original = card('one'), incoming = structuredClone(original);
+      const baseline = {...page(original), view: 'profile'};
+      if (change === 'old-issue') original.issues = [{reason: '이전 본문 미확인'}];
+      assert.equal((await store.append(baseline, identity)).unchangedCleanPage, false);
+      const next = {...page(incoming), view: 'profile'};
+      if (change === 'new-card') next.cards.push(card('two'));
+      if (change === 'text') incoming.text = '바뀐 본문';
+      if (change === 'label') incoming.label = '1/2';
+      if (change === 'timestamp') incoming.timestamp = '2026-09-18T00:00:00Z';
+      if (change === 'context') incoming.context = 'replies';
+      if (change === 'attachments') incoming.attachments = [{type: 'long-text', url: `${incoming.id}/media`, text: '새 첨부', source: 'profile-dom'}];
+      if (change === 'notes') incoming.notes = [{type: 'unavailable-content', text: '이용할 수 없는 게시물'}];
+      if (change === 'groupIds') incoming.groupIds = [incoming.id, '/@tester/post/two'];
+      if (change === 'card-issue') incoming.issues = [{reason: '본문 미확인'}];
+      if (change === 'page-issue') next.issues.push({reason: '목록 미확인'});
+      if (change === 'empty') next.cards = [];
+      if (change === 'detail') next.view = 'detail';
+      if (change === 'loading') next.loading = true;
+      if (change === 'blocked') next.blocked = true;
+      assert.equal((await store.append(next, identity)).unchangedCleanPage, change === 'same', change);
+      assert.equal((await store.exportCapture()).snapshots, 2, 'even a known viewport is still durably observed');
+    } finally { await store.close(); }
+  }
+});
+
+test('재수집 checkpoint는 백그라운드가 정한 큐·순서·현재 첫 글을 바꾸거나 일반 목록 수집으로 이탈하지 못한다', async () => {
+  const store = new CaptureStore({indexedDB: new IDBFactory()});
+  const navigation = {mode: 'opening', workflow: 'repair', profilePath: '/@tester', repairQueue: ['/@tester/post/one', '/@tester/post/two'],
+    repairIndex: 0, activeChain: {rootId: '/@tester/post/one'}, detailStartedAt: 1000, resume: null, visitedRoots: []};
+  try {
+    await store.start('tester', 7, identity.runId, {navigation, startedAt: 1000});
+    for (const changed of [{repairQueue: ['/ @other/post/injected']}, {repairIndex: 1}, {workflow: 'profile'}, {mode: 'profile'}, {activeChain: {rootId: '/@tester/post/two'}}])
+      await assert.rejects(store.checkpoint({...navigation, ...changed}, identity), /재수집/);
+    assert.deepEqual((await store.getControl()).navigation, navigation);
+    assert.equal((await store.checkpoint({...navigation, mode: 'detail'}, identity)).ok, true);
+    await assert.rejects(store.recordChain({rootId: '/@tester/post/two', total: 2, members: [], missing: [1, 2], status: 'incomplete'}, identity), /재수집/);
+  } finally { await store.close(); }
+});
+
 const allRecords = store => store.transaction('readonly', async stores => Object.fromEntries(await Promise.all(
   Object.entries(stores).map(async ([name, objectStore]) => [name, await new Promise((resolve, reject) => {
     const reading = objectStore.getAll(); reading.onsuccess = () => resolve(reading.result); reading.onerror = () => reject(reading.error);

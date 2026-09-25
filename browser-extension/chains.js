@@ -62,7 +62,10 @@
       if (!byPart.has(part)) byPart.set(part, new Set());
       byPart.get(part).add(id);
     };
-    for (const member of chain.members || []) add(member.part, member.id);
+    // Storage may retain a member's relationship while its body is still
+    // unverified. Only a clean card read below can fill such a missing number.
+    const unverified = new Set(chain.missing || []);
+    for (const member of chain.members || []) if (!unverified.has(member.part)) add(member.part, member.id);
     // Keep conflicting IDs after serialization/restart; a later clean viewport
     // must not erase evidence that two different posts claimed the same number.
     for (const conflict of chain.conflicts || []) {
