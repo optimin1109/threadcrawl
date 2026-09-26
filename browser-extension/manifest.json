@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Threads 텍스트 보관 — 실험판",
+  "version": "0.4.6",
+  "description": "Threads 공개 프로필을 탐색하며 번호가 붙은 연속글의 상세 본문과 긴 첨부를 로컬에 저장합니다. 누락 번호를 표시하며 전체 백업은 보장하지 않습니다.",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "action": {"default_popup": "popup.html"},
+  "background": {"service_worker": "background.mjs", "type": "module"}
+}

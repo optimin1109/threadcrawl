@@ -1,0 +1,272 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { exportCaptureMarkdown } from '../browser-extension/export.mjs';
+
+const card = (overrides = {}) => ({
+  id: '/@hongso0921/post/First_01',
+  timestamp: '2026-09-18T15:00:00Z',
+  text: '확보한 본문',
+  label: null,
+  groupIds: [],
+  issues: [],
+  context: 'threads',
+  attachments: [],
+  ...overrides,
+});
+const capture = (cards, overrides = {}) => ({
+  version: 2, provenance: 'browser-dom', account: 'hongso0921',
+  status: '중단', reason: '사용자 중지', cards, issues: [], ...overrides,
+});
+// Parse literal text fences as a consumer would; compare the source payload,
+// not the exporter's escaping or date-formatting implementation.
+const fencePattern = /^(`{3,})text\n([\s\S]*?)\n\1(?=\n|$)/gm;
+const textBlocks = markdown => [...markdown.matchAll(fencePattern)].map(match => match[2]);
+const outsideText = markdown => markdown.replace(fencePattern, '');
+
+test('video presence is explained without claiming to archive audio or captions', () => {
+  const output=exportCaptureMarkdown(capture([card({notes:[{type:'video',url:'https://www.threads.com/@hongso0921/post/First_01'}]})]));
+  assert.match(output,/동영상 원본·음성·자막은 저장하지 않았습니다/);
+  assert.match(output,/\[동영상이 있는 원문\]\(https:\/\/www\.threads\.com\/@hongso0921\/post\/First_01\)/);
+});
+
+test('7,835자를 넘는 긴 첨부의 끝·공백·빈 줄·원래 줄바꿈을 보존한다', () => {
+  const longText = '  시작\t😀\r\n' + '가나다라 마바사아 자차카타 파하 '.repeat(450)
+    + '\n\n  마지막 줄  \n';
+  assert.ok([...longText].length > 7835);
+  const output = exportCaptureMarkdown(capture([card({
+    attachments: [{ type: 'long-text', url: '/@hongso0921/post/First_01/media', text: longText, source: 'profile-dom' }],
+  })]));
+  assert.deepEqual(textBlocks(output), ['확보한 본문', longText]);
+  assert.match(output, /긴 첨부/);
+  assert.match(output, /https:\/\/www\.threads\.com\/@hongso0921\/post\/First_01\/media/);
+});
+
+test('화면 순번이 있는 후속글도 개별 원문과 링크로 전부 보존한다', () => {
+  const cards = [1, 2, 3].map(n => card({
+    id: `/@hongso0921/post/Part_${n}`, text: `${n}번째 확보 내용`, label: `${n}/3`,
+    groupIds: ['/@hongso0921/post/Part_1', '/@hongso0921/post/Part_2', '/@hongso0921/post/Part_3'],
+  }));
+  const output = exportCaptureMarkdown(capture(cards));
+  assert.deepEqual(textBlocks(output), ['1번째 확보 내용', '2번째 확보 내용', '3번째 확보 내용']);
+  assert.equal((output.match(/^## \d{4}-\d{2}-\d{2}/gm) || []).length, 3);
+  for (let n = 1; n <= 3; n++) {
+    assert.ok(output.includes(`https://www.threads.com/@hongso0921/post/Part_${n}`));
+    assert.ok(output.includes(`${n}/3`));
+  }
+  assert.match(output, /분류.*미확인/);
+  assert.match(output, /최초.*묶음.*미확인/);
+});
+
+test('KST 경계를 적용하고 오래된 순으로 내보내되 입력 배열을 변경하지 않는다', () => {
+  const input = capture([
+    card({ id: '/@hongso0921/post/Later', timestamp: '2026-09-18T15:00:00Z', text: '9월 19일 글' }),
+    card({ id: '/@hongso0921/post/Earlier', timestamp: '2026-09-18T14:59:59Z', text: '9월 18일 글' }),
+  ]);
+  const original = structuredClone(input);
+  const output = exportCaptureMarkdown(input);
+  assert.deepEqual(textBlocks(output), ['9월 18일 글', '9월 19일 글']);
+  assert.match(output, /## 2026-09-18/);
+  assert.match(output, /## 2026-09-19/);
+  assert.match(output, /KST/);
+  assert.deepEqual(input, original);
+});
+
+test('잘못된 날짜·시간대 없는 날짜·존재하지 않는 날짜도 내용과 경고를 남긴다', () => {
+  const cards = ['not-a-date', '2026-09-18T15:00:00', '2026-02-30T12:00:00Z', null]
+    .map((timestamp, i) => card({ id: `/@hongso0921/post/BadDate_${i}`, timestamp, text: `날짜 미확인 내용 ${i}` }));
+  const output = exportCaptureMarkdown(capture(cards));
+  for (let i = 0; i < 4; i++) assert.ok(textBlocks(output).includes(`날짜 미확인 내용 ${i}`));
+  assert.equal((output.match(/^## 날짜 미확인/gm) || []).length, 4);
+  assert.ok(output.includes('not-a-date'));
+  assert.ok(output.includes('2026-02-30T12:00:00Z'));
+});
+
+test('확보한 빈 본문·미확인 본문·첨부만 있는 글·답글·리포스트를 제외하지 않는다', () => {
+  const cards = [
+    card({ id: '/@hongso0921/post/Empty', text: '' }),
+    card({ id: '/@hongso0921/post/Unknown', text: null, context: 'replies' }),
+    card({ id: '/@hongso0921/post/AttachmentOnly', text: null, context: 'reposts',
+      attachments: [{ type: 'long-text', url: '/@hongso0921/post/AttachmentOnly/media', text: '첨부만 확보', source: 'profile-dom' }] }),
+  ];
+  const output = exportCaptureMarkdown(capture(cards));
+  for (const item of cards) assert.ok(output.includes(`https://www.threads.com${item.id}`));
+  assert.ok(textBlocks(output).includes(''));
+  assert.ok(textBlocks(output).includes('첨부만 확보'));
+  assert.match(output, /본문.*미확인/);
+  assert.match(output, /3개/);
+});
+
+test('원문 Markdown·HTML·백틱은 보고서 제목이나 활성 링크가 되지 않는다', () => {
+  const text = '# 가짜 제목\n\n[클릭](javascript:alert(1))\n<script>alert(1)</script>\n```\n```text\n#### 침범\n````\n  끝  ';
+  const output = exportCaptureMarkdown(capture([card({ text })]));
+  assert.deepEqual(textBlocks(output), [text]);
+  assert.doesNotMatch(outsideText(output), /가짜 제목|javascript:|<script>|침범/);
+});
+
+test('계정·상태·문제 설명은 Markdown 제목과 링크를 주입할 수 없다', () => {
+  const injected = '[외부](https://evil.example)\n# 가짜 제목 <img src=x>';
+  const output = exportCaptureMarkdown(capture([card({ issues: [{ id: null, reason: injected }] })], {
+    account: injected, status: injected, reason: injected,
+    issues: [{ id: injected, reason: injected }],
+  }));
+  assert.doesNotMatch(outsideText(output), /^# 가짜 제목|<img src=x>|\]\(https:\/\/evil\.example\)/m);
+  assert.match(output, /계정.*미확인/);
+  assert.match(output, /외부/);
+  assert.ok(textBlocks(output).includes('확보한 본문'));
+});
+
+test('위험한·외부·변조된 URL은 링크화하지 않고 원문과 본문을 보존한다', () => {
+  const invalidIds = [
+    'javascript:alert(1)', 'https://evil.example/@hongso0921/post/Fake',
+    '//evil.example/@hongso0921/post/Fake', '/@hongso0921/post/Bad)[x](https://evil.example)',
+  ];
+  const output = exportCaptureMarkdown(capture(invalidIds.map((id, i) => card({
+    id, text: `URL 미확인 내용 ${i}`,
+    attachments: [{ type: 'long-text', url: 'data:text/html,<h1>bad</h1>', text: `첨부 내용 ${i}`, source: 'profile-dom' }],
+  }))));
+  for (let i = 0; i < invalidIds.length; i++) {
+    assert.ok(textBlocks(output).includes(invalidIds[i]));
+    assert.ok(textBlocks(output).includes(`URL 미확인 내용 ${i}`));
+    assert.ok(textBlocks(output).includes(`첨부 내용 ${i}`));
+  }
+  assert.doesNotMatch(outsideText(output), /\]\((?:javascript:|data:|https:\/\/evil\.example|\/\/evil)/);
+  assert.match(output, /URL.*미확인/);
+});
+
+test('여러 첨부의 원문·출처·실패 경고를 순서대로 보존한다', () => {
+  const output = exportCaptureMarkdown(capture([card({
+    issues: [{ id: '/@hongso0921/post/First_01', reason: '세 번째 첨부 구조 미확인' }],
+    attachments: [
+      { type: 'long-text', url: '/@hongso0921/post/First_01/media', text: '첫 첨부\n', source: 'profile-dom' },
+      { type: 'long-text', url: 'https://www.threads.net/@hongso0921/post/First_01/media', text: '\t둘째 첨부  ', source: 'profile-dom' },
+      { type: 'long-text', url: null, text: '', source: 'profile-dom' },
+    ],
+  })], { issues: [{ id: null, reason: '과거 목록 끝 미확인' }] }));
+  assert.deepEqual(textBlocks(output).filter(value => value !== 'null'), ['확보한 본문', '첫 첨부\n', '\t둘째 첨부  ', '']);
+  assert.equal((output.match(/^### 긴 첨부/gm) || []).length, 3);
+  assert.match(output, /profile-dom/);
+  assert.match(output, /세 번째 첨부 구조 미확인/);
+  assert.match(output, /과거 목록 끝 미확인/);
+});
+
+test('빈 수집과 완료 표기가 있는 수집도 전체 개수·누락 여부를 미검증으로 표시한다', () => {
+  for (const cards of [[], [card()]]) {
+    const output = exportCaptureMarkdown(capture(cards, { status: '완료', allPublicPostsVerified: true }));
+    assert.match(output, /전체.*개수.*미검증/);
+    assert.match(output, /누락.*미검증/);
+    assert.ok(output.includes(`${cards.length}개`));
+  }
+});
+
+test('완료한 연속글은 맨 위에 N/N 확보를 알리고 각 본문은 독립적으로 보존한다', () => {
+  const cards = [1, 2, 3].map(n => card({ id: `/@hongso0921/post/Chain${n}`, label: `${n}/3`, text: `연속글 본문 ${n}` }));
+  const output = exportCaptureMarkdown(capture(cards, { chains: [{ rootId: cards[0].id, total: 3, status: 'complete', members: cards.map((item, i) => ({ part: i + 1, id: item.id })), missing: [], reason: null }] }));
+  assert.match(output, /연속글 3\/3.*완료/);
+  assert.ok(output.indexOf('연속글 3/3') < output.indexOf('## 2026-09-19'));
+  assert.deepEqual(textBlocks(output), cards.map(item => item.text));
+  assert.match(output, /전체.*개수.*미검증/);
+});
+
+test('목록에서 확보한 연속글과 미저장 이미지·장소를 명확히 표시한다', () => {
+  const cards=[1,2].map(n=>card({id:`/@hongso0921/post/Small${n}`,label:`${n}/2`,text:`본문 ${n}`}));
+  cards[0].notes=[{type:'image',url:`${cards[0].id}/media`},{type:'location',text:'장소 [링크](https://evil.example)'}];
+  const output=exportCaptureMarkdown(capture(cards,{chains:[{rootId:cards[0].id,total:2,status:'complete',completedFrom:'profile',members:cards.map((c,i)=>({part:i+1,id:c.id})),missing:[]}]}));
+  assert.match(output,/프로필 목록/);
+  assert.match(output,/이미지.*저장하지/);
+  assert.doesNotMatch(outsideText(output),/\]\(https:\/\/evil\.example\)/);
+  assert.deepEqual(textBlocks(output),cards.map(c=>c.text));
+});
+
+test('사라진 인용·링크 미리보기는 본문과 구분하며 번호별 본문 확보를 취소하지 않는다', () => {
+  const cards = [1, 2].map(n => card({
+    id: `/@hongso0921/post/Preview${n}`, label: `${n}/2`, text: `  본문 ${n}\r\n\n끝  `,
+  }));
+  cards[0].notes = [{ type: 'unavailable-content', text: '이용할 수 없는 게시물' }];
+  cards[1].notes = [{ type: 'link-preview', url: 'https://news.example/article?id=42', domain: 'news.example', title: '화면에 표시된 제목' }];
+  const input = capture(cards, { chains: [{
+    rootId: cards[0].id, total: 2, status: 'complete', completedFrom: 'profile',
+    members: cards.map((item, i) => ({ part: i + 1, id: item.id })), missing: [],
+  }] });
+  const before = JSON.stringify(input);
+  const output = exportCaptureMarkdown(input);
+  assert.deepEqual(textBlocks(output), cards.map(item => item.text));
+  assert.match(output, /연속글 2\/2 확보 · 완료/);
+  assert.match(output, /확보한 카드 2개 · 첨부 0개/);
+  assert.match(output, /인용·연결된 원문은 이용할 수 없어 저장하지 못했습니다/);
+  assert.match(output, /화면 안내: 이용할 수 없는 게시물/);
+  assert.match(output, /링크 미리보기: 화면에 표시된 제목/);
+  assert.match(output, /표시 도메인: news\.example/);
+  assert.ok(output.includes('[외부 링크](https://news.example/article?id=42)'));
+  assert.match(output, /외부 원문 전문과 미리보기 이미지는 저장하지 않았습니다/);
+  assert.match(output, /이용할 수 없는 인용·연결된 원문을 저장했다는 뜻은 아닙니다/);
+  assert.doesNotMatch(output, /^### 긴 첨부/gm);
+  assert.equal(JSON.stringify(input), before);
+});
+
+test('미리보기 메타데이터를 이스케이프하고 HTTP 링크의 괄호를 안전하게 출력한다', () => {
+  const injected = '[외부](https://evil.example)\n# 가짜 제목 <img src=x>';
+  const output = exportCaptureMarkdown(capture([card({ notes: [
+    { type: 'unavailable-content', text: injected },
+    { type: 'link-preview', url: 'http://news.example/a(b)[c]?q=(d)#end(e)', domain: injected, title: injected },
+  ] })]));
+  assert.deepEqual(textBlocks(output), ['확보한 본문']);
+  assert.doesNotMatch(outsideText(output), /^# 가짜 제목|<img src=x>|\]\(https:\/\/evil\.example\)/m);
+  assert.ok(output.includes('[외부 링크](http://news.example/a%28b%29%5Bc%5D?q=%28d%29#end%28e%29)'));
+});
+
+test('IPv6 외부 링크의 주소 괄호는 보존하고 경로·쿼리·프래그먼트 괄호만 인코딩한다', () => {
+  const url = 'https://[2001:db8::1]:8443/a(b)[c]?q=[d]#end(e)';
+  const output = exportCaptureMarkdown(capture([card({ notes: [
+    { type: 'link-preview', url, domain: '[2001:db8::1]', title: 'IPv6 링크' },
+  ] })]));
+  const target = output.match(/\[외부 링크\]\(([^)]+)\)/)?.[1];
+  assert.ok(target, '외부 링크가 있어야 합니다.');
+  assert.equal(new URL(target).origin, new URL(url).origin);
+  assert.equal(target, 'https://[2001:db8::1]:8443/a%28b%29%5Bc%5D?q=%5Bd%5D#end%28e%29');
+});
+
+test('미리보기의 위험한 URL·인증정보·제어문자는 링크로 만들지 않는다', () => {
+  const invalidUrls = [
+    'javascript:alert(1)', 'data:text/html,<h1>bad</h1>', '//news.example/article',
+    'https://reader:password@news.example/article', 'https://reader@news.example/article',
+    'https://news.example/\narticle', 'https://news.example/\tarticle',
+    'https://news.example/\u0000article', 'https://news.example/\u007farticle',
+    'https:\\news.example\\article',
+  ];
+  const input = capture([card({ notes: invalidUrls.map(url => ({
+    type: 'link-preview', url, domain: 'news.example', title: '검증하지 못한 미리보기',
+  })) })]);
+  const before = structuredClone(input);
+  const output = exportCaptureMarkdown(input);
+  assert.equal((output.match(/외부 링크 URL 미확인/g) || []).length, invalidUrls.length);
+  assert.doesNotMatch(outsideText(output), /\[외부 링크\]\(/);
+  assert.ok(textBlocks(output).includes('확보한 본문'));
+  assert.deepEqual(input, before);
+});
+
+test('빠진 중간 번호와 충돌 사유는 연속글 경고로 남긴다', () => {
+  const cards = [1, 3].map(n => card({ id: `/@hongso0921/post/Chain${n}`, label: `${n}/3`, text: `확보 ${n}` }));
+  const output = exportCaptureMarkdown(capture(cards, { chains: [{ rootId: cards[0].id, total: 3, status: 'incomplete', members: cards.map((item, i) => ({ part: i ? 3 : 1, id: item.id })), missing: [2], reason: '2번 본문 미확보' }] }));
+  assert.match(output, /연속글 2\/3.*미완료/);
+  assert.match(output, /빠진 번호: 2/);
+  assert.match(output, /2번 본문 미확보/);
+  assert.deepEqual(textBlocks(output), cards.map(item => item.text));
+});
+
+test('연속글 메타데이터가 완료여도 실제 내보낼 본문이 빠지면 완료라고 하지 않는다', () => {
+  const output = exportCaptureMarkdown(capture([card({ label: '1/2' })], { chains: [{ rootId: '/@hongso0921/post/First_01', total: 2, status: 'complete', members: [{ part: 1, id: '/@hongso0921/post/First_01' }, { part: 2, id: '/@hongso0921/post/Missing' }], missing: [], reason: null }] }));
+  assert.match(output, /연속글 1\/2.*미완료/);
+  assert.match(output, /빠진 번호: 2/);
+});
+
+test('충돌한 순번은 본문을 삭제하지 않고 미완료 경고와 함께 보존한다', () => {
+  const cards = [1, 2].map(n => card({ id: `/@hongso0921/post/Chain${n}`, label: `${n}/2`, text: `확보 ${n}` }));
+  const initial = capture(cards, { chains: [{ rootId: cards[0].id, total: 2, status: 'complete', members: cards.map((item, i) => ({ part: i + 1, id: item.id })), missing: [], conflictDetected: true, reason: '연속글 관계 충돌 [외부](https://evil.example)' }] });
+  const before = structuredClone(initial);
+  const output = exportCaptureMarkdown(initial);
+  assert.match(output, /연속글 2\/2.*미완료/);
+  assert.match(output, /연속글 관계 충돌/);
+  assert.doesNotMatch(outsideText(output), /\]\(https:\/\/evil\.example\)/);
+  assert.deepEqual(textBlocks(output), cards.map(item => item.text));
+  assert.deepEqual(initial, before);
+});
